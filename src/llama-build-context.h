@@ -245,6 +245,8 @@ struct llm_build_context {
 
     ggml_cgraph * build_olmo();
 
+    ggml_cgraph * build_olmoe();
+
     ggml_cgraph * build_openelm();
 
     ggml_cgraph * build_gptneox();
