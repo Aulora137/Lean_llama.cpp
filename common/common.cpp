@@ -1971,6 +1971,14 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         params.expert_log_path = argv[i];
         return true;
     }
+    if (arg == "--policy-file") {
+        // LeanInfer Phase 2c: apply hot/warm/cold expert madvise tiering from policy.json
+        if (++i >= argc) {
+            throw std::invalid_argument("error: --policy-file requires a file path argument");
+        }
+        params.expert_policy_path = argv[i];
+        return true;
+    }
     if (arg == "--sql-save-file") {
         CHECK_ARG
         params.sql_save_file = argv[i];

@@ -574,6 +574,13 @@ extern "C" {
     // Pass NULL to disable. The caller owns the FILE and must close it after llama_free.
     LLAMA_API void llama_set_expert_log(struct llama_context * ctx, FILE * fp);
 
+    // LeanInfer Phase 2c: apply hot/warm/cold expert madvise tiering from a policy.json file.
+    // Calls madvise(MADV_WILLNEED) on hot expert weight pages and madvise(MADV_DONTNEED) on cold
+    // expert weight pages. Only works when the model uses mmap (use_mmap=true, default).
+    // Must be called after llama_init / llama_new_context_with_model.
+    // Returns the number of experts tiered, or -1 on error.
+    LLAMA_API int llama_apply_expert_policy(struct llama_context * ctx, const char * policy_path);
+
     // Frees all allocated memory
     LLAMA_API void llama_free(struct llama_context * ctx);
 

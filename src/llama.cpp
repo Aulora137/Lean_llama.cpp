@@ -9172,3 +9172,139 @@ void llama_set_expert_log(struct llama_context * ctx, FILE * fp) {
     ctx->expert_log_file = fp;
 }
 
+// ---------------------------------------------------------------------------
+// LeanInfer Phase 2c: expert placement policy via madvise
+// ---------------------------------------------------------------------------
+
+// Minimal JSON integer-array parser: find the first [...] array after 'key'
+// in the JSON text and return its contents as a vector<int>.
+static std::vector<int> policy_parse_int_array(const std::string & json, const std::string & key) {
+    std::vector<int> result;
+    auto pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return result;
+    pos = json.find('[', pos);
+    if (pos == std::string::npos) return result;
+    auto end = json.find(']', pos);
+    if (end == std::string::npos) return result;
+    std::string body = json.substr(pos + 1, end - pos - 1);
+    size_t i = 0;
+    while (i < body.size()) {
+        while (i < body.size() && (body[i] == ' ' || body[i] == '\n' || body[i] == ',' || body[i] == '\r')) ++i;
+        if (i >= body.size()) break;
+        if (std::isdigit(body[i]) || body[i] == '-') {
+            char * endp;
+            int v = (int)strtol(body.c_str() + i, &endp, 10);
+            result.push_back(v);
+            i = (size_t)(endp - body.c_str());
+        } else {
+            break;
+        }
+    }
+    return result;
+}
+
+// Apply madvise hints to the weight pages of a single expert within a tensor.
+// tensor->data must be an mmap'd region (use_mmap=true).
+static void policy_madvise_expert(struct ggml_tensor * tensor, int expert_id, int advice) {
+#if defined(MADV_WILLNEED) || defined(MADV_DONTNEED)
+    if (!tensor || !tensor->data) return;
+    // Expert weights are stacked along axis 2: expert_id * nb[2] bytes from base.
+    const size_t stride = (size_t)tensor->nb[2];
+    const size_t page   = 4096;
+    char * base = (char *)tensor->data + (size_t)expert_id * stride;
+    // Align to page boundary.
+    char * aligned = (char *)(((uintptr_t)base) & ~(page - 1));
+    size_t len     = stride + (size_t)(base - aligned);
+    len = (len + page - 1) & ~(page - 1);
+    madvise(aligned, len, advice);
+#else
+    (void)tensor; (void)expert_id; (void)advice;
+#endif
+}
+
+int llama_apply_expert_policy(struct llama_context * ctx, const char * policy_path) {
+    if (!ctx || !policy_path) return -1;
+
+    // Read policy file.
+    FILE * fp = fopen(policy_path, "r");
+    if (!fp) {
+        LLAMA_LOG_ERROR("%s: cannot open policy file '%s': %s\n", __func__, policy_path, strerror(errno));
+        return -1;
+    }
+    fseek(fp, 0, SEEK_END);
+    long fsz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (fsz <= 0 || fsz > 64 * 1024 * 1024) {
+        fclose(fp);
+        LLAMA_LOG_ERROR("%s: policy file size unexpected (%ld bytes)\n", __func__, fsz);
+        return -1;
+    }
+    std::string json(fsz, '\0');
+    if ((long)fread(&json[0], 1, fsz, fp) != fsz) {
+        fclose(fp);
+        LLAMA_LOG_ERROR("%s: failed to read policy file\n", __func__);
+        return -1;
+    }
+    fclose(fp);
+
+    const llama_model & model = ctx->model;
+    const int n_layers  = (int)model.hparams.n_layer;
+    const int n_experts = (int)model.hparams.n_expert;
+
+    if (n_experts == 0) {
+        LLAMA_LOG_WARN("%s: model has no experts (n_expert=0); policy has no effect\n", __func__);
+        return 0;
+    }
+
+    int n_tiered = 0;
+    int n_hot = 0, n_cold = 0;
+
+    for (int il = 0; il < n_layers; ++il) {
+        const llama_layer & layer = model.layers[il];
+
+        // Find the per-layer JSON object: search for "\"<il>\"" key and its braces.
+        std::string layer_key = "\"" + std::to_string(il) + "\"";
+        auto lpos = json.find(layer_key);
+        if (lpos == std::string::npos) continue;
+        auto bopen = json.find('{', lpos);
+        if (bopen == std::string::npos) continue;
+        // Find matching closing brace.
+        int depth = 1;
+        size_t bclose = bopen + 1;
+        while (bclose < json.size() && depth > 0) {
+            if (json[bclose] == '{') ++depth;
+            else if (json[bclose] == '}') --depth;
+            ++bclose;
+        }
+        std::string layer_json = json.substr(bopen, bclose - bopen);
+
+        std::vector<int> hot  = policy_parse_int_array(layer_json, "hot");
+        std::vector<int> cold = policy_parse_int_array(layer_json, "cold");
+
+        // Apply WILLNEED to hot experts (prefetch into page cache).
+        for (int eid : hot) {
+            if (eid < 0 || eid >= n_experts) continue;
+            policy_madvise_expert(layer.ffn_gate_exps, eid, MADV_WILLNEED);
+            policy_madvise_expert(layer.ffn_up_exps,   eid, MADV_WILLNEED);
+            policy_madvise_expert(layer.ffn_down_exps, eid, MADV_WILLNEED);
+            ++n_hot;
+        }
+
+        // Apply DONTNEED to cold experts (release physical pages; they'll fault in from mmap).
+        for (int eid : cold) {
+            if (eid < 0 || eid >= n_experts) continue;
+            policy_madvise_expert(layer.ffn_gate_exps, eid, MADV_DONTNEED);
+            policy_madvise_expert(layer.ffn_up_exps,   eid, MADV_DONTNEED);
+            policy_madvise_expert(layer.ffn_down_exps, eid, MADV_DONTNEED);
+            ++n_cold;
+        }
+
+        n_tiered += (int)(hot.size() + cold.size());
+    }
+
+    LLAMA_LOG_INFO("%s: policy applied — %d hot + %d cold experts across %d layers "
+                   "(madvised %d tensor regions)\n",
+                   __func__, n_hot, n_cold, n_layers, (n_hot + n_cold) * 3);
+    return n_hot + n_cold;
+}
+
