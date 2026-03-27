@@ -401,7 +401,8 @@ struct gpt_params {
     thinking_tokens think_tokens;
     int reasoning_budget      = -1;
     bool no_think             = false; // LeanInfer: --no-think flag (disable thinking entirely)
-    std::string expert_log_path = ""; // LeanInfer: --expert-log <path> records MoE top-k selections per token
+    std::string expert_log_path    = ""; // LeanInfer: --expert-log <path> records MoE top-k selections per token
+    std::string expert_policy_path = ""; // LeanInfer: --policy-file <path> applies hot/warm/cold madvise tiering
     bool prefill_assistant    = true;
     bool dry_run              = false;
 

@@ -237,6 +237,16 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // LeanInfer Phase 2c: apply expert placement policy (madvise tiering) if requested
+    if (!params.expert_policy_path.empty()) {
+        int n = llama_apply_expert_policy(ctx, params.expert_policy_path.c_str());
+        if (n < 0) {
+            LOG_TEE("%s: warning: expert policy not applied (see above)\n", __func__);
+        } else {
+            LOG_TEE("%s: expert policy applied: %d experts tiered\n", __func__, n);
+        }
+    }
+
     // LeanInfer Phase 2c: open expert activation log if requested
     FILE * expert_log_fp = nullptr;
     if (!params.expert_log_path.empty()) {
