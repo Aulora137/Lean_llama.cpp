@@ -103,6 +103,8 @@ struct create_tensors_helper : public create_tensors_helper_interface {
 
     bool create_olmo_tensors(const LLM_TN & tn);
 
+    bool create_olmoe_tensors(const LLM_TN & tn);
+
     bool create_openelm_tensors(const LLM_TN & tn);
 
     bool create_gptneox_tensors(const LLM_TN & tn);
@@ -2105,6 +2107,43 @@ bool create_tensors_helper::create_olmo_tensors(const LLM_TN & tn) {
     return use_mmap_buffer;
 }
 
+bool create_tensors_helper::create_olmoe_tensors(const LLM_TN & tn) {
+    LOADING_PRELUDE
+
+    create_embd_output(tn, n_embd, n_vocab);
+
+    for (int i = 0; i < n_layer; ++i) {
+        ggml_context * ctx_layer = ctx_for_layer(i);
+        ggml_context * ctx_split = ctx_for_layer_split(i);
+
+        auto & layer = model.layers[i];
+
+        layer.attn_norm = create_tensor(ctx_layer, tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd});
+
+        layer.wq = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_Q,   "weight", i), {n_embd, n_embd});
+        layer.wk = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_K,   "weight", i), {n_embd, n_embd_gqa});
+        layer.wv = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_V,   "weight", i), {n_embd, n_embd_gqa});
+        layer.wo = create_tensor(ctx_split, tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd, n_embd});
+
+        layer.attn_q_norm = create_tensor(ctx_layer, tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), {n_embd});
+        layer.attn_k_norm = create_tensor(ctx_layer, tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), {n_embd});
+
+        layer.ffn_norm = create_tensor(ctx_layer, tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd});
+
+        layer.ffn_gate_inp = create_tensor(ctx_layer, tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), {n_embd, n_expert});
+
+        if (n_expert == 0) {
+            throw std::runtime_error("n_expert must be > 0 for OLMOE");
+        }
+        if (n_expert_used == 0) {
+            throw std::runtime_error("n_expert_used must be > 0 for OLMOE");
+        }
+
+        use_mmap_buffer &= !create_std_ffn_exps(n_embd, tn, i);
+    }
+    return use_mmap_buffer;
+}
+
 bool create_tensors_helper::create_openelm_tensors(const LLM_TN & tn) {
     LOADING_PRELUDE
 
@@ -3890,6 +3929,8 @@ bool create_tensors_helper::create_tensors() {
             use_mmap_buffer = create_command_r_tensors(tn); break;
         case LLM_ARCH_OLMO:  // adapted from LLM_ARCH_LLAMA with norm params removed
             use_mmap_buffer = create_olmo_tensors(tn); break;
+        case LLM_ARCH_OLMOE:
+            use_mmap_buffer = create_olmoe_tensors(tn); break;
         case LLM_ARCH_OPENELM:
             use_mmap_buffer = create_openelm_tensors(tn); break;
         case LLM_ARCH_GPTNEOX:

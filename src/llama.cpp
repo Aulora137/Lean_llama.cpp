@@ -29,6 +29,9 @@
 #include "iqk/iqk_quantize.h"
 #include "iqk/iqk_cpu_ops.h"
 
+// LeanInfer Phase 0a profiler
+#include "../../instrument/leaninfer_profiler.h"
+
 #define IK_PRINT_TIMING 0
 
 #ifdef GGML_USE_RPC
@@ -877,7 +880,9 @@ static bool llama_kv_cache_init(
         }
         else {
             if (qnext_recurrent) {
-                s = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hparams.n_embd_v_s(), qnext_state_slots);
+                // LeanInfer Phase 1c: store recurrent state as FP16 (50% memory reduction)
+                // Cast to FP32 before delta_net op, cast back after
+                s = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, hparams.n_embd_v_s(), qnext_state_slots);
                 auto s_name = std::string{"cache_s_l"} + std::to_string(i);
                 ggml_set_name(s, s_name.c_str());
                 cache.s_l[i] = s;
@@ -1229,8 +1234,9 @@ static bool llama_kv_cache_seq_rm(
     if (p0 < 0) p0 = 0;
     if (p1 < 0) p1 = std::numeric_limits<llama_pos>::max();
 
-    // models like Mamba can't have a state partially erased
-    if (cache.recurrent) {
+    // models like Mamba or hybrid (Qwen 3.5) can't have recurrent state partially erased
+    // LeanInfer: added cache.hybrid check — Qwen 3.5 sets hybrid=true, recurrent=false
+    if (cache.recurrent || cache.hybrid) {
         if (seq_id >= (int64_t) cache.size) {
             // could be fatal
             return false;
@@ -3645,7 +3651,12 @@ static void llama_graph_compute(
     }
 #endif
 
-    ggml_backend_sched_graph_compute_async(lctx.sched, gf);
+    {
+        LI_PROFILE_SCOPE("graph", "graph_compute");
+        ggml_backend_sched_graph_compute_async(lctx.sched, gf);
+    }
+
+    LI_PROFILE_COUNTER("graph_nodes", gf->n_nodes);
 
     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(lctx.sched));
 }
@@ -3764,8 +3775,11 @@ static int llama_decode_internal(
         }
     }
 
+    LI_PROFILE_COUNTER("batch_tokens", n_tokens_all);
+
     bool warned_qnext_mixed_repeat = false;
     for (uint32_t cur_token = 0; cur_token < n_tokens_all; ) {
+        LI_PROFILE_SCOPE("decode", "ubatch");
 #if IK_PRINT_TIMING
         auto tim1 = ggml_time_us();
 #endif
@@ -5919,6 +5933,7 @@ enum llama_rope_type llama_rope_type(const struct llama_model * model) {
         case LLM_ARCH_QWEN:
         case LLM_ARCH_QWEN2:
         case LLM_ARCH_QWEN2MOE:
+        case LLM_ARCH_OLMOE:
         case LLM_ARCH_QWEN3:
         case LLM_ARCH_QWEN3MOE:
         case LLM_ARCH_QWEN3NEXT:
@@ -7760,6 +7775,7 @@ int32_t llama_encode(
 int32_t llama_decode(
         struct llama_context * ctx,
           struct llama_batch   batch) {
+    LI_PROFILE_SCOPE("decode", "llama_decode");
     const int ret = llama_decode_internal(*ctx, batch);
     if (ret < 0) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
