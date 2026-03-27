@@ -1954,6 +1954,23 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         params.reasoning_budget = std::stoi(argv[i]);
         return true;
     }
+    if (arg == "--no-think") {
+        // LeanInfer: disable thinking entirely
+        // Combines: reasoning_budget=0, ban <think> token, presence_penalty=1.5
+        params.no_think = true;
+        params.reasoning_budget = 0;
+        params.think_tokens.exclude = true;
+        return true;
+    }
+    if (arg == "--expert-log") {
+        // LeanInfer: log MoE expert top-k selections per token to a file
+        // Format: one line per token-layer: "layer:exp0,exp1,...,expK\n"
+        if (++i >= argc) {
+            throw std::invalid_argument("error: --expert-log requires a file path argument");
+        }
+        params.expert_log_path = argv[i];
+        return true;
+    }
     if (arg == "--sql-save-file") {
         CHECK_ARG
         params.sql_save_file = argv[i];
@@ -3227,6 +3244,26 @@ struct llama_init_result llama_init_from_gpt_params(gpt_params & params) {
 
     if (params.ignore_eos) {
         params.sparams.logit_bias[llama_token_eos(model)] = -INFINITY;
+    }
+
+    // LeanInfer: --no-think bans <think> token and sets presence_penalty
+    if (params.no_think) {
+        // Tokenize "<think>" to find its token ID(s)
+        const char * think_str = "<think>";
+        const int think_str_len = 7;
+        llama_token think_buf[8];
+        int n = llama_tokenize(model, think_str, think_str_len, think_buf, 8, false, true);
+        if (n > 0) {
+            for (int j = 0; j < n; j++) {
+                params.sparams.logit_bias[think_buf[j]] = -INFINITY;
+            }
+            LOG("%s: --no-think: banned %d token(s) for '<think>'\n", __func__, n);
+        }
+        // Set presence_penalty if not already set by user
+        if (params.sparams.penalty_present == 0.0f) {
+            params.sparams.penalty_present = 1.5f;
+            LOG("%s: --no-think: set presence_penalty = 1.5\n", __func__);
+        }
     }
 
     if (params.sparams.dry_penalty_last_n == -1) {

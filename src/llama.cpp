@@ -3679,6 +3679,42 @@ static bool prepare_mtp_graph_inputs(struct llama_context & lctx) {
 //   - lctx:      llama context
 //   - batch:     batch to evaluate
 //
+// LeanInfer Phase 2c: per-op eval callback to log MoE expert activations inline.
+// Fired by the ggml backend scheduler for each op.  When ask=true we request
+// evaluation up to each "ffn_moe_topk" tensor; when ask=false the tensor has
+// just been computed and its data is valid — we read it before memory is reused.
+//
+// The view has shape [n_expert_used, n_tokens] with non-unit strides (stride[1]
+// = n_expert * sizeof(int32_t)) so we read each token's k experts independently.
+static bool expert_log_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
+    if (ask) {
+        return strncmp(t->name, "ffn_moe_topk", 12) == 0;
+    }
+    FILE * fp = static_cast<FILE *>(user_data);
+    // Name is "ffn_moe_topk-N"; parse N.
+    const char * p = t->name + 12;
+    while (*p && *p != '-') ++p;
+    if (!*p) return true;
+    int il = atoi(p + 1);
+
+    const int64_t t_k   = t->ne[0]; // n_expert_used
+    const int64_t t_tok = t->ne[1]; // tokens in this ubatch
+    const size_t stride = (size_t)t->nb[1]; // bytes between successive tokens
+    std::vector<int32_t> experts((size_t)t_k);
+    for (int64_t tok = 0; tok < t_tok; ++tok) {
+        ggml_backend_tensor_get(t, experts.data(), (size_t)tok * stride,
+                                (size_t)t_k * sizeof(int32_t));
+        fprintf(fp, "%d:", il);
+        for (int64_t k = 0; k < t_k; ++k) {
+            if (k) fputc(',', fp);
+            fprintf(fp, "%d", experts[k]);
+        }
+        fputc('\n', fp);
+    }
+    fflush(fp);
+    return true;
+}
+
 // return 0 on success
 // return positive int on warning
 // return negative int on error
@@ -3940,7 +3976,14 @@ static int llama_decode_internal(
         ggml_cgraph * gf = nullptr;
         if (!lctx.can_reuse_graph(u_batch)) {
             lctx.reset_scheduler();
-            ggml_backend_sched_set_eval_callback(lctx.sched, lctx.cparams.cb_eval, lctx.cparams.cb_eval_user_data);
+            // LeanInfer Phase 2c: install expert-log callback when logging is active.
+            // The callback reads each ffn_moe_topk tensor inline, right after it is
+            // computed, before ggml-alloc can reuse the underlying argsort buffer.
+            if (lctx.expert_log_file) {
+                ggml_backend_sched_set_eval_callback(lctx.sched, expert_log_sched_eval_cb, lctx.expert_log_file);
+            } else {
+                ggml_backend_sched_set_eval_callback(lctx.sched, lctx.cparams.cb_eval, lctx.cparams.cb_eval_user_data);
+            }
 #if IK_PRINT_TIMING
             tim2 = ggml_time_us();
             printf("sched_reset(...): %d us\n", int(tim2-tim1));
@@ -4027,6 +4070,9 @@ static int llama_decode_internal(
         tim2 = ggml_time_us();
         printf("graph_compute(...): %d us\n", int(tim2-tim1));
 #endif
+
+        // LeanInfer Phase 2c: expert activation data is logged inline by
+        // expert_log_sched_eval_cb during compute; nothing to do here.
 
         bool reset_previous = false;
         // update the kv ring buffer
@@ -9120,5 +9166,9 @@ void llama_set_offload_policy(struct llama_context * lctx, int op, bool on_or_of
 
 void llama_set_draft_input_hidden_state(struct llama_context * ctx, const float * hidden_state) {
     ctx->draft_input_hidden_state = hidden_state;
+}
+
+void llama_set_expert_log(struct llama_context * ctx, FILE * fp) {
+    ctx->expert_log_file = fp;
 }
 

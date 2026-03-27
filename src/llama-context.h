@@ -195,6 +195,12 @@ struct llama_context {
     ggml_abort_callback abort_callback      = nullptr;
     void *              abort_callback_data = nullptr;
 
+    // LeanInfer Phase 2c: MoE expert activation logger
+    // Set expert_log_file before decode; tensors are captured during graph build
+    // and read after each graph compute.
+    FILE * expert_log_file = nullptr;
+    std::vector<struct ggml_tensor *> expert_topk_tensors; // ffn_moe_topk per layer
+
     const float * draft_input_hidden_state = nullptr;
 
     // input tensors

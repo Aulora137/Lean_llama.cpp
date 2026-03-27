@@ -570,6 +570,10 @@ extern "C" {
 
     LLAMA_API void llama_set_offload_policy(struct llama_context * lctx, int op, bool on_or_off);
 
+    // LeanInfer Phase 2c: set FILE* for expert activation logging (MoE models)
+    // Pass NULL to disable. The caller owns the FILE and must close it after llama_free.
+    LLAMA_API void llama_set_expert_log(struct llama_context * ctx, FILE * fp);
+
     // Frees all allocated memory
     LLAMA_API void llama_free(struct llama_context * ctx);
 
