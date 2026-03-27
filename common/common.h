@@ -400,6 +400,8 @@ struct gpt_params {
     common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
     thinking_tokens think_tokens;
     int reasoning_budget      = -1;
+    bool no_think             = false; // LeanInfer: --no-think flag (disable thinking entirely)
+    std::string expert_log_path = ""; // LeanInfer: --expert-log <path> records MoE top-k selections per token
     bool prefill_assistant    = true;
     bool dry_run              = false;
 

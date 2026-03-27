@@ -2,6 +2,7 @@
 #include "chat.h"
 #include "console.h"
 #include "llama.h"
+#include "../../instrument/leaninfer_profiler.h"
 #include <cassert>
 #include <cinttypes>
 #include <cmath>
@@ -127,6 +128,23 @@ static std::string chat_add_and_format(struct llama_model * model, common_chat_t
 }
 
 int main(int argc, char ** argv) {
+    // LeanInfer: check for --li-profile flag before parsing
+    const char * li_profile_path = nullptr;
+    for (int i = 1; i < argc - 1; i++) {
+        if (strcmp(argv[i], "--li-profile") == 0) {
+            li_profile_path = argv[i + 1];
+            // Remove these args so gpt_params_parse doesn't choke
+            for (int j = i; j < argc - 2; j++) {
+                argv[j] = argv[j + 2];
+            }
+            argc -= 2;
+            break;
+        }
+    }
+    if (li_profile_path) {
+        LI_PROFILE_INIT(0);
+    }
+
     gpt_params params;
     g_params = &params;
 
@@ -218,6 +236,20 @@ int main(int argc, char ** argv) {
         LOG_TEE("%s: error: unable to load model\n", __func__);
         return 1;
     }
+
+    // LeanInfer Phase 2c: open expert activation log if requested
+    FILE * expert_log_fp = nullptr;
+    if (!params.expert_log_path.empty()) {
+        expert_log_fp = fopen(params.expert_log_path.c_str(), "w");
+        if (!expert_log_fp) {
+            LOG_TEE("%s: warning: failed to open expert log '%s': %s\n",
+                    __func__, params.expert_log_path.c_str(), strerror(errno));
+        } else {
+            LOG_TEE("%s: expert activation log -> %s\n", __func__, params.expert_log_path.c_str());
+            llama_set_expert_log(ctx, expert_log_fp);
+        }
+    }
+
     auto chat_templates = common_chat_templates_init(model, params.chat_template);
 
     const int n_ctx_train = llama_n_ctx_train(model);
@@ -1000,6 +1032,17 @@ int main(int argc, char ** argv) {
 
     llama_print_timings(ctx);
     write_logfile(ctx, params, model, input_tokens, output_ss.str(), output_tokens);
+
+    // LeanInfer: write profiler trace
+    if (li_profile_path) {
+        LI_PROFILE_FINISH(li_profile_path);
+    }
+
+    // LeanInfer Phase 2c: close expert log (must be after all decodes, before llama_free)
+    if (expert_log_fp) {
+        llama_set_expert_log(ctx, nullptr);
+        fclose(expert_log_fp);
+    }
 
     if (ctx_guidance) { llama_free(ctx_guidance); }
     llama_free(ctx);
