@@ -581,6 +581,13 @@ extern "C" {
     // Returns the number of experts tiered, or -1 on error.
     LLAMA_API int llama_apply_expert_policy(struct llama_context * ctx, const char * policy_path);
 
+    // LeanInfer Phase 3b: enable dynamic expert prefetch.
+    // After each layer's top-k gating, issues madvise(MADV_WILLNEED) on those same
+    // expert IDs in the next n_ahead layers.  Uses expert locality: active experts
+    // tend to remain active in nearby layers.  n_ahead=0 disables.
+    // Linux only (no-op on other platforms).
+    LLAMA_API void llama_enable_expert_prefetch(struct llama_context * ctx, int n_ahead);
+
     // Frees all allocated memory
     LLAMA_API void llama_free(struct llama_context * ctx);
 

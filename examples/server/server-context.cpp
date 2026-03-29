@@ -2623,6 +2623,21 @@ void server_context::release_slots()
             slot.command = SLOT_COMMAND_NONE;
             slot.t_last_used = ggml_time_us();
 
+            // LeanInfer Phase 2a: Chain-of-Thought KV cache eviction
+            // If thinking tokens were generated, evict them from KV cache to reclaim memory
+            if (slot.params.think_tokens.exclude && slot.cache_tokens.n_tokens() > 0) {
+                server_tokens without_think = slot.cache_tokens.get_tokens_exclude_think(slot.ctx, slot.params.think_tokens);
+                const int n_evicted = (int)slot.cache_tokens.n_tokens() - (int)without_think.n_tokens();
+                if (n_evicted > 0) {
+                    // Replace cache_tokens with the version that excludes thinking
+                    // The KV cache positions for thinking tokens become stale and will be
+                    // overwritten on next use. This reclaims effective cache capacity.
+                    slot.cache_tokens = std::move(without_think);
+                    SLT_INF(slot, "CoT eviction: removed %d thinking tokens from cache (%d remaining)\n",
+                            n_evicted, (int)without_think.n_tokens());
+                }
+            }
+
             LOG_INFO("slot released", {
                 {"id_slot",         slot.id},
                 {"id_task",         slot.id_task},
@@ -2810,7 +2825,14 @@ void server_context::apply_checkpoint(server_slot & slot) {
     if (slot.n_past > 0 && slot.n_past < slot.cache_tokens.n_tokens()) {
         int32_t pos_min = llama_kv_cache_seq_pos_min(slot.ctx, slot.id);
 
-        if (pos_min > pos_min_thold) {
+        // LeanInfer: for hybrid models (Qwen 3.5), pos_min returns pos_max because
+        // recurrent state encompasses all positions. Skip the SWA-based threshold check
+        // — recurrent state checkpoints are always valid if they exist.
+        const bool is_hybrid = slot.ctx != nullptr &&
+            (llama_get_model(slot.ctx) != nullptr &&
+             llama_model_has_recurrent(llama_get_model(slot.ctx)));
+
+        if (!is_hybrid && pos_min > pos_min_thold) {
             SLT_WRN(slot, "n_past = %d, slot.prompt.tokens.size() = %d, seq_id = %d, pos_min = %d\n", slot.n_past, (int)slot.cache_tokens.size(), slot.id, pos_min);
 
             // search for a context checkpoint

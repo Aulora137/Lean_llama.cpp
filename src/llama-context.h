@@ -201,6 +201,16 @@ struct llama_context {
     FILE * expert_log_file = nullptr;
     std::vector<struct ggml_tensor *> expert_topk_tensors; // ffn_moe_topk per layer
 
+    // LeanInfer Phase 3b: dynamic expert prefetch
+    // After layer N's gating, madvise(WILLNEED) the selected experts in the next
+    // expert_prefetch_n_ahead layers. 0 = disabled.
+    int expert_prefetch_n_ahead = 0;
+    // Per-expert warm cache: once we confirm expert[layer][expert] is resident,
+    // skip future mincore+madvise calls for it (avoids syscall overhead on warm models).
+    // Indexed [layer_idx * n_experts + expert_id] across gate/up/down tensors.
+    // Reset on model reload. The 3 weight tensors (gate/up/down) share the same entry.
+    std::vector<bool> expert_prefetch_warm_cache; // size = n_layers * n_experts
+
     const float * draft_input_hidden_state = nullptr;
 
     // input tensors

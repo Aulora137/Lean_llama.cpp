@@ -13,6 +13,9 @@
 #include "ggml-aarch64.h"
 #include "iqk/iqk_quantize.h"
 #include "iqk/iqk_cpu_ops.h"
+
+// LeanInfer Phase 0b profiler
+#include "../../../instrument/leaninfer_profiler.h"
 #if GGML_USE_IQK_MULMAT
 #include "iqk/iqk_mul_mat.h"
 #include "iqk/iqk_config.h"
@@ -26630,7 +26633,30 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 #if IK_PRINT_TIMING
         int64_t tim1 = ggml_time_us();
 #endif
+
+#ifdef LEANINFER_PROFILE
+        // Per-node profiling — thread 0 only to avoid lock contention
+        int64_t _li_node_id = 0;
+        if (state->ith == 0 && li_profiler_is_enabled()) {
+            // Categorize by op name prefix: "blk.N." -> layer N
+            const char * _cat = "node";
+            if (node->name[0] == 'b' && node->name[1] == 'l' && node->name[2] == 'k') {
+                _cat = "layer";
+            } else if (node->name[0] == 'r' && node->name[1] == 'e' && node->name[2] == 's') {
+                _cat = "output";
+            }
+            _li_node_id = li_event_begin(_cat, node->name);
+        }
+#endif
+
         node_n = ggml_compute_forward(&params, node, cgraph, node_n);
+
+#ifdef LEANINFER_PROFILE
+        if (state->ith == 0 && _li_node_id != 0) {
+            li_event_end(_li_node_id);
+        }
+#endif
+
 #if IK_PRINT_TIMING
         int64_t tim2 = ggml_time_us();
         t_eval += tim2 - tim1;

@@ -3686,11 +3686,14 @@ static bool prepare_mtp_graph_inputs(struct llama_context & lctx) {
 //
 // The view has shape [n_expert_used, n_tokens] with non-unit strides (stride[1]
 // = n_expert * sizeof(int32_t)) so we read each token's k experts independently.
+// LeanInfer: MoE expert callback — handles Phase 2c (expert log) and Phase 3b (prefetch).
+// user_data = llama_context * (changed from FILE* to expose prefetch_n_ahead + model layers).
 static bool expert_log_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
     if (ask) {
         return strncmp(t->name, "ffn_moe_topk", 12) == 0;
     }
-    FILE * fp = static_cast<FILE *>(user_data);
+    llama_context * lctx = static_cast<llama_context *>(user_data);
+
     // Name is "ffn_moe_topk-N"; parse N.
     const char * p = t->name + 12;
     while (*p && *p != '-') ++p;
@@ -3701,17 +3704,85 @@ static bool expert_log_sched_eval_cb(struct ggml_tensor * t, bool ask, void * us
     const int64_t t_tok = t->ne[1]; // tokens in this ubatch
     const size_t stride = (size_t)t->nb[1]; // bytes between successive tokens
     std::vector<int32_t> experts((size_t)t_k);
-    for (int64_t tok = 0; tok < t_tok; ++tok) {
-        ggml_backend_tensor_get(t, experts.data(), (size_t)tok * stride,
-                                (size_t)t_k * sizeof(int32_t));
-        fprintf(fp, "%d:", il);
-        for (int64_t k = 0; k < t_k; ++k) {
-            if (k) fputc(',', fp);
-            fprintf(fp, "%d", experts[k]);
+
+    // Only need to read experts once (all tokens share the same gating when prefetching).
+    // For logging we need all tokens; for prefetch any one token's selection suffices.
+    bool experts_loaded = false;
+
+    // --- Phase 2c: expert log ---
+    if (lctx->expert_log_file) {
+        for (int64_t tok = 0; tok < t_tok; ++tok) {
+            ggml_backend_tensor_get(t, experts.data(), (size_t)tok * stride,
+                                    (size_t)t_k * sizeof(int32_t));
+            fprintf(lctx->expert_log_file, "%d:", il);
+            for (int64_t k = 0; k < t_k; ++k) {
+                if (k) fputc(',', lctx->expert_log_file);
+                fprintf(lctx->expert_log_file, "%d", experts[k]);
+            }
+            fputc('\n', lctx->expert_log_file);
         }
-        fputc('\n', fp);
+        fflush(lctx->expert_log_file);
+        experts_loaded = true; // experts[] holds last token's selection
     }
-    fflush(fp);
+
+    // --- Phase 3b: predictive expert prefetch ---
+    // After layer il's gating, madvise WILLNEED on those same experts in layers
+    // il+1 .. il+n_ahead.  Expert locality heuristic: active experts tend to
+    // remain active in nearby layers.
+    //
+    // Uses per-expert warm cache to avoid repeated mincore/madvise syscalls:
+    // once an expert's page is confirmed resident, its cache entry is set and
+    // future iterations skip it entirely — zero overhead on warm models.
+#if defined(__linux__)
+    const int n_ahead = lctx->expert_prefetch_n_ahead;
+    if (n_ahead > 0 && !lctx->expert_prefetch_warm_cache.empty()) {
+        if (!experts_loaded) {
+            ggml_backend_tensor_get(t, experts.data(),
+                    (size_t)(t_tok - 1) * stride, (size_t)t_k * sizeof(int32_t));
+        }
+        const long page_sz = sysconf(_SC_PAGESIZE);
+        const auto & layers = lctx->model.layers;
+        const int n_layers  = (int)layers.size();
+        const int n_experts = (int)lctx->model.hparams.n_expert;
+        for (int ahead = 1; ahead <= n_ahead && (il + ahead) < n_layers; ++ahead) {
+            const int next_il = il + ahead;
+            const auto & next_layer = layers[next_il];
+            struct ggml_tensor * weight_tensors[3] = {
+                next_layer.ffn_gate_exps,
+                next_layer.ffn_up_exps,
+                next_layer.ffn_down_exps,
+            };
+            for (int64_t k = 0; k < t_k; ++k) {
+                const int eid = experts[k];
+                // Check warm cache — skip if all 3 tensors for this expert are warm.
+                const int cache_idx = next_il * n_experts + eid;
+                if ((size_t)cache_idx < lctx->expert_prefetch_warm_cache.size() &&
+                        lctx->expert_prefetch_warm_cache[cache_idx]) {
+                    continue; // already confirmed warm — no syscall needed
+                }
+                bool all_warm = true;
+                for (int wi = 0; wi < 3; ++wi) {
+                    struct ggml_tensor * wt = weight_tensors[wi];
+                    if (!wt || !wt->data) continue;
+                    const size_t expert_stride = (size_t)wt->nb[2];
+                    char * base    = (char *)wt->data + (size_t)eid * expert_stride;
+                    char * aligned = (char *)(((uintptr_t)base) & ~(uintptr_t)(page_sz - 1));
+                    size_t length  = expert_stride + (size_t)(base - aligned);
+                    unsigned char mc1 = 0;
+                    if (mincore(aligned, (size_t)page_sz, &mc1) == 0 && (mc1 & 1)) {
+                        continue; // this tensor's first page is warm
+                    }
+                    all_warm = false;
+                    madvise(aligned, length, MADV_WILLNEED);
+                }
+                // Mark warm in cache so subsequent tokens skip this expert entirely.
+                if (all_warm && (size_t)cache_idx < lctx->expert_prefetch_warm_cache.size()) {
+                    lctx->expert_prefetch_warm_cache[cache_idx] = true;
+                }
+            }
+        }
+    }
+#endif
     return true;
 }
 
@@ -3976,11 +4047,10 @@ static int llama_decode_internal(
         ggml_cgraph * gf = nullptr;
         if (!lctx.can_reuse_graph(u_batch)) {
             lctx.reset_scheduler();
-            // LeanInfer Phase 2c: install expert-log callback when logging is active.
-            // The callback reads each ffn_moe_topk tensor inline, right after it is
-            // computed, before ggml-alloc can reuse the underlying argsort buffer.
-            if (lctx.expert_log_file) {
-                ggml_backend_sched_set_eval_callback(lctx.sched, expert_log_sched_eval_cb, lctx.expert_log_file);
+            // LeanInfer Phase 2c/3b: install expert callback when logging or prefetch active.
+            // Passes llama_context* as user_data (Phase 2c used FILE*; unified for Phase 3b).
+            if (lctx.expert_log_file || lctx.expert_prefetch_n_ahead > 0) {
+                ggml_backend_sched_set_eval_callback(lctx.sched, expert_log_sched_eval_cb, &lctx);
             } else {
                 ggml_backend_sched_set_eval_callback(lctx.sched, lctx.cparams.cb_eval, lctx.cparams.cb_eval_user_data);
             }
@@ -9306,5 +9376,26 @@ int llama_apply_expert_policy(struct llama_context * ctx, const char * policy_pa
                    "(madvised %d tensor regions)\n",
                    __func__, n_hot, n_cold, n_layers, (n_hot + n_cold) * 3);
     return n_hot + n_cold;
+}
+
+// LeanInfer Phase 3b: enable dynamic expert prefetch.
+void llama_enable_expert_prefetch(struct llama_context * ctx, int n_ahead) {
+#if defined(__linux__)
+    ctx->expert_prefetch_n_ahead = n_ahead;
+    if (n_ahead > 0) {
+        // Pre-allocate warm cache indexed [layer * n_experts + expert_id].
+        const int n_layers  = (int)ctx->model.layers.size();
+        const int n_experts = (int)ctx->model.hparams.n_expert;
+        ctx->expert_prefetch_warm_cache.assign((size_t)(n_layers * n_experts), false);
+        LLAMA_LOG_INFO("%s: dynamic expert prefetch enabled -- n_ahead=%d, cache=%d entries\n",
+                       __func__, n_ahead, n_layers * n_experts);
+    } else {
+        ctx->expert_prefetch_warm_cache.clear();
+        LLAMA_LOG_INFO("%s: dynamic expert prefetch disabled\n", __func__);
+    }
+#else
+    (void)ctx; (void)n_ahead;
+    LLAMA_LOG_WARN("%s: dynamic expert prefetch not supported on this platform\n", __func__);
+#endif
 }
 

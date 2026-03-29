@@ -1256,6 +1256,13 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         params.cache_type_v = argv[++i];
         return true;
     }
+    if (arg == "--kv-compress") {
+        // LeanInfer Phase 3c: shorthand for Q8_0 KV cache compression.
+        // Reduces KV memory by ~47% and improves attention speed ~4% at 700+ token contexts.
+        params.cache_type_k = "q8_0";
+        params.cache_type_v = "q8_0";
+        return true;
+    }
     if (arg == "-ctkd" || arg == "--cache-type-k-draft") {
         params.speculative.cache_type_k = argv[++i];
         return true;
@@ -1534,6 +1541,12 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     if (arg == "-rtr" || arg == "--run-time-repack") {
         params.repack_tensors = true;
         params.use_mmap = false;
+        return true;
+    }
+    if (arg == "--auto-rtr") {
+        // LeanInfer: enable repacking only if model × 2.5 fits in available RAM.
+        // Decision is deferred to main (needs model path to know file size).
+        params.auto_rtr = true;
         return true;
     }
     if (arg == "-thp" || arg == "--transparent-huge-pages") {
@@ -1977,6 +1990,14 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
             throw std::invalid_argument("error: --policy-file requires a file path argument");
         }
         params.expert_policy_path = argv[i];
+        return true;
+    }
+    if (arg == "--expert-prefetch") {
+        // LeanInfer Phase 3b: dynamic expert prefetch N layers ahead
+        if (++i >= argc) {
+            throw std::invalid_argument("error: --expert-prefetch requires an integer argument");
+        }
+        params.expert_prefetch_n_ahead = std::stoi(argv[i]);
         return true;
     }
     if (arg == "--sql-save-file") {
