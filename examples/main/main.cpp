@@ -2,8 +2,10 @@
 #include "chat.h"
 #include "console.h"
 #include "llama.h"
+#include "speculative.h"
 #include "../../instrument/leaninfer_profiler.h"
 #include <cassert>
+#include <numeric>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -18,7 +20,12 @@
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))
 #include <signal.h>
 #include <unistd.h>
-#elif defined (_WIN32)
+#endif
+#if defined(__linux__)
+#include <sys/stat.h>
+#include <sys/sysinfo.h>
+#endif
+#if defined (_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -221,6 +228,41 @@ int main(int argc, char ** argv) {
     g_model = &model;
     g_ctx = &ctx;
 
+    // LeanInfer Phase 3d: --auto-rtr — enable no-mmap + tensor repacking when model fits in RAM.
+    // Repacking converts IQ/Q4_K weights to IQK interleaved format (better AVX2 utilization).
+    // Requires 2× model RAM but gives ~4-7% decode speedup with one-time startup cost.
+    if (params.auto_rtr && !params.repack_tensors) {
+#if defined(__linux__)
+        struct sysinfo si;
+        if (sysinfo(&si) == 0) {
+            const uint64_t free_ram   = (uint64_t)si.freeram * si.mem_unit;
+            const uint64_t total_ram  = (uint64_t)si.totalram * si.mem_unit;
+            // Use total rather than free: mmap already has the model mapped, so "free"
+            // understates available space. A model × 2.5 headroom is safe on most systems.
+            struct stat model_st;
+            bool model_stat_ok = (stat(params.model.c_str(), &model_st) == 0);
+            uint64_t model_bytes = model_stat_ok ? (uint64_t)model_st.st_size : 0;
+            const uint64_t needed  = model_bytes * 5 / 2; // 2.5× the model file size
+            if (model_bytes > 0 && needed <= total_ram * 8 / 10) { // ≤80% of total RAM
+                LOG_TEE("%s: auto-rtr: model %.1f GB × 2.5 = %.1f GB fits in %.1f GB total RAM — enabling repacking\n",
+                        __func__,
+                        (double)model_bytes / (1 << 30),
+                        (double)needed / (1 << 30),
+                        (double)total_ram / (1 << 30));
+                params.repack_tensors = true;
+                params.use_mmap = false;
+            } else {
+                LOG_TEE("%s: auto-rtr: model × 2.5 (%.1f GB) exceeds 80%% of total RAM (%.1f GB) — skipping repacking\n",
+                        __func__,
+                        (double)needed / (1 << 30),
+                        (double)(total_ram * 8 / 10) / (1 << 30));
+            }
+        }
+#else
+        LOG_TEE("%s: auto-rtr: not supported on this platform\n", __func__);
+#endif
+    }
+
     // load the model and apply lora adapter, if any
     LOG("%s: load the model and apply lora adapter, if any\n", __func__);
     llama_init_result llama_init = llama_init_from_gpt_params(params);
@@ -237,6 +279,21 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // LeanInfer Phase 3a: init speculative decoding (ngram-based, no draft model required)
+    common_speculative * spec = nullptr;
+    if (params.speculative.type != COMMON_SPECULATIVE_TYPE_NONE && ctx_guidance == nullptr) {
+        if (common_speculative_is_compat(ctx)) {
+            spec = common_speculative_init(params.speculative, ctx);
+            if (spec) {
+                LOG_TEE("%s: speculative: %s  n_draft=%d  p_min=%.2f\n", __func__,
+                        common_speculative_type_to_str(params.speculative.type).c_str(),
+                        params.speculative.n_max, params.speculative.p_min);
+            }
+        } else {
+            LOG_TEE("%s: [warn] context not compatible with speculative decoding\n", __func__);
+        }
+    }
+
     // LeanInfer Phase 2c: apply expert placement policy (madvise tiering) if requested
     if (!params.expert_policy_path.empty()) {
         int n = llama_apply_expert_policy(ctx, params.expert_policy_path.c_str());
@@ -245,6 +302,11 @@ int main(int argc, char ** argv) {
         } else {
             LOG_TEE("%s: expert policy applied: %d experts tiered\n", __func__, n);
         }
+    }
+
+    // LeanInfer Phase 3b: enable dynamic expert prefetch if requested
+    if (params.expert_prefetch_n_ahead > 0) {
+        llama_enable_expert_prefetch(ctx, params.expert_prefetch_n_ahead);
     }
 
     // LeanInfer Phase 2c: open expert activation log if requested
@@ -582,6 +644,13 @@ int main(int argc, char ** argv) {
     std::vector<llama_token> embd;
     std::vector<llama_token> embd_guidance;
 
+    // LeanInfer Phase 3a: speculative decoding state
+    llama_token  spec_sampled       = LLAMA_TOKEN_NULL; // committed but not-yet-decoded token
+    llama_tokens spec_drafts;                           // current draft tokens after spec_sampled
+    int          spec_n_past_before = 0;                // n_past before spec batch was decoded
+    bool         spec_seeded        = false;            // whether spec_begin() was called
+    bool         spec_in_think      = false;            // currently inside <think>...</think>
+
     // tokenized antiprompts
     std::vector<std::vector<llama_token>> antiprompt_ids;
 
@@ -759,9 +828,30 @@ int main(int argc, char ** argv) {
 
                 LOG("eval: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd).c_str());
 
-                if (llama_decode(ctx, llama_batch_get_one(&embd[i], n_eval, n_past, 0))) {
-                    LOG_TEE("%s : failed to eval\n", __func__);
-                    return 1;
+                // LeanInfer Phase 3a: spec batch needs logits at every position so
+                // common_sampler_sample_and_accept_n can call llama_get_logits_ith for each draft.
+                // llama_batch_get_one only marks the last token — build a full batch instead.
+                if (!spec_drafts.empty() && i == 0) {
+                    llama_batch spec_batch = llama_batch_init(n_eval, 0, 1);
+                    for (int j = 0; j < n_eval; j++) {
+                        spec_batch.token   [j]    = embd[i + j];
+                        spec_batch.pos     [j]    = n_past + j;
+                        spec_batch.n_seq_id[j]    = 1;
+                        spec_batch.seq_id  [j][0] = 0;
+                        spec_batch.logits  [j]    = 1;
+                    }
+                    spec_batch.n_tokens = n_eval;
+                    int ret = llama_decode(ctx, spec_batch);
+                    llama_batch_free(spec_batch);
+                    if (ret) {
+                        LOG_TEE("%s : failed to eval spec batch\n", __func__);
+                        return 1;
+                    }
+                } else {
+                    if (llama_decode(ctx, llama_batch_get_one(&embd[i], n_eval, n_past, 0))) {
+                        LOG_TEE("%s : failed to eval\n", __func__);
+                        return 1;
+                    }
                 }
 
                 n_past += n_eval;
@@ -779,6 +869,51 @@ int main(int argc, char ** argv) {
             }
         }
 
+        // LeanInfer Phase 3a: speculative accept — runs immediately after decode,
+        // before embd is cleared, so we can read the logits from the spec batch.
+        if (spec && !spec_drafts.empty()) {
+            const int n_drafted = (int)spec_drafts.size();
+            std::vector<int> idxs(n_drafted + 1);
+            std::iota(idxs.begin(), idxs.end(), 0);
+
+            // Returns [acc_0..acc_M, correction]; M ∈ [0, n_drafted]
+            auto ids = common_sampler_sample_and_accept_n(ctx_sampling, ctx, idxs, spec_drafts);
+            spec_drafts.clear();
+
+            // Trim KV cache: remove rejected draft positions
+            const int n_past_actual = spec_n_past_before + (int)ids.size();
+            llama_kv_cache_seq_rm(ctx, 0, n_past_actual, -1);
+            n_past = n_past_actual;
+
+            common_speculative_accept(spec, (int)ids.size() - 1);
+
+            // Display all accepted tokens (tokens after the spec base)
+            for (const llama_token tok : ids) {
+                const std::string tok_str = common_token_to_piece(ctx, tok, params.special);
+                if (display) {
+                    fprintf(stdout, "%s", tok_str.c_str());
+                    fflush(stdout);
+                }
+                output_tokens.push_back(tok);
+                output_ss << tok_str;
+
+                // Track <think>...</think> boundaries for reasoning-aware params
+                if (!params.think_tokens.begin.empty() &&
+                    tok_str.find(params.think_tokens.begin) != std::string::npos) {
+                    spec_in_think = true;
+                }
+                if (!params.think_tokens.end.empty() &&
+                    tok_str.find(params.think_tokens.end) != std::string::npos) {
+                    spec_in_think = false;
+                }
+            }
+
+            // Last token = correction (sampled but not decoded); becomes next spec base
+            spec_sampled = ids.back();
+            n_remain -= (int)ids.size();
+            input_echo = false; // display already handled above
+        }
+
         embd.clear();
         embd_guidance.clear();
 
@@ -791,21 +926,88 @@ int main(int argc, char ** argv) {
                 LOG("saved session to %s\n", path_session.c_str());
             }
 
-            const llama_token id = common_sampler_sample_legacy(ctx_sampling, ctx, ctx_guidance);
+            // LeanInfer Phase 3a: speculative decoding — two sub-paths (bootstrap + regular)
+            if (spec && ctx_guidance == nullptr && n_remain > 0) {
+                // Seed the n-gram table once on first entry to generation
+                if (!spec_seeded) {
+                    spec_seeded = true;
+                    common_speculative_begin(spec, embd_inp);
+                }
 
-            common_sampler_accept(ctx_sampling, ctx, id, /* apply_grammar= */ true);
+                // Reasoning-aware params: aggressive inside <think>, conservative outside
+                auto params_spec = params.speculative;
+                if (spec_in_think) {
+                    params_spec.n_max = std::max(params_spec.n_max, 16);
+                    params_spec.p_min = std::min(params_spec.p_min, 0.5f);
+                } else {
+                    params_spec.n_max = std::min(params_spec.n_max, 8);
+                }
 
-            LOG("last: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, ctx_sampling->prev).c_str());
+                // Full growing context: consumed prompt + all generated output.
+                // ngram-cache's draft() processes tokens incrementally via cache_size tracking,
+                // so it needs the full history — not a rolling window — to build n-gram patterns.
+                llama_tokens ctx_full;
+                ctx_full.reserve(n_consumed + (int)output_tokens.size());
+                ctx_full.insert(ctx_full.end(), embd_inp.begin(), embd_inp.begin() + n_consumed);
+                ctx_full.insert(ctx_full.end(), output_tokens.begin(), output_tokens.end());
 
-            embd.push_back(id);
+                if (spec_sampled == LLAMA_TOKEN_NULL) {
+                    // --- Bootstrap: sample first generation token, start spec batch ---
+                    const llama_token id = common_sampler_sample_legacy(ctx_sampling, ctx, nullptr);
+                    common_sampler_accept(ctx_sampling, ctx, id, /* apply_grammar= */ true);
 
-            // echo this to console
-            input_echo = true;
+                    // Display directly — drafts in embd must not be echoed
+                    const std::string tok_str = common_token_to_piece(ctx, id, params.special);
+                    if (display) { fprintf(stdout, "%s", tok_str.c_str()); fflush(stdout); }
+                    output_tokens.push_back(id);
+                    output_ss << tok_str;
+                    if (!params.think_tokens.begin.empty() &&
+                        tok_str.find(params.think_tokens.begin) != std::string::npos) spec_in_think = true;
+                    if (!params.think_tokens.end.empty() &&
+                        tok_str.find(params.think_tokens.end) != std::string::npos) spec_in_think = false;
+                    --n_remain;
 
-            // decrement remaining sampling budget
-            --n_remain;
+                    // Build spec batch: id (not yet decoded) + drafts.
+                    // ctx_full was snapshotted before output_tokens.push_back(id), so append id now.
+                    embd.push_back(id);
+                    if (!llama_token_is_eog(model, id)) {
+                        ctx_full.push_back(id);
+                        spec_drafts = common_speculative_draft(spec, params_spec, ctx_full, id);
+                        embd.insert(embd.end(), spec_drafts.begin(), spec_drafts.end());
+                    }
+                    spec_n_past_before = n_past;
+                } else {
+                    // --- Regular spec iteration: decode [spec_sampled, drafts] ---
+                    embd.push_back(spec_sampled);
+                    if (!llama_token_is_eog(model, spec_sampled)) {
+                        spec_drafts = common_speculative_draft(spec, params_spec, ctx_full, spec_sampled);
+                        embd.insert(embd.end(), spec_drafts.begin(), spec_drafts.end());
+                    } else {
+                        spec_drafts.clear();
+                    }
+                    spec_n_past_before = n_past;
+                    spec_sampled = LLAMA_TOKEN_NULL;
+                }
+                input_echo = false;
+                LOG("n_remain: %d\n", n_remain);
+            } else {
+                // Normal single-token path
+                const llama_token id = common_sampler_sample_legacy(ctx_sampling, ctx, ctx_guidance);
 
-            LOG("n_remain: %d\n", n_remain);
+                common_sampler_accept(ctx_sampling, ctx, id, /* apply_grammar= */ true);
+
+                LOG("last: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, ctx_sampling->prev).c_str());
+
+                embd.push_back(id);
+
+                // echo this to console
+                input_echo = true;
+
+                // decrement remaining sampling budget
+                --n_remain;
+
+                LOG("n_remain: %d\n", n_remain);
+            }
         } else {
             // some user input remains from prompt or interaction, forward it to processing
             LOG("embd_inp.size(): %d, n_consumed: %d\n", (int) embd_inp.size(), n_consumed);
@@ -1022,7 +1224,9 @@ int main(int argc, char ** argv) {
         }
 
         // end of generation
-        if (!embd.empty() && llama_token_is_eog(model, embd.back()) && !(params.interactive)) {
+        // LeanInfer Phase 3a: don't fire EOG on unverified draft tokens
+        if (!embd.empty() && llama_token_is_eog(model, embd.back()) && !(params.interactive)
+                && (spec == nullptr || spec_drafts.empty())) {
             LOG_TEE(" [end of text]\n");
             break;
         }
@@ -1046,6 +1250,13 @@ int main(int argc, char ** argv) {
     // LeanInfer: write profiler trace
     if (li_profile_path) {
         LI_PROFILE_FINISH(li_profile_path);
+    }
+
+    // LeanInfer Phase 3a: speculative decoding stats + cleanup
+    if (spec) {
+        common_speculative_print_stats(spec);
+        common_speculative_free(spec);
+        spec = nullptr;
     }
 
     // LeanInfer Phase 2c: close expert log (must be after all decodes, before llama_free)

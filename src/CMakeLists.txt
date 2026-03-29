@@ -62,6 +62,17 @@ add_library(llama
             unicode-data.cpp
             )
 
+# LeanInfer Phase 0a profiler
+option(LEANINFER_PROFILE "Enable LeanInfer profiling instrumentation" OFF)
+if (LEANINFER_PROFILE)
+    # Add profiler source to both ggml (for per-node hooks) and llama
+    set(_LI_PROFILER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../instrument/leaninfer_profiler.cpp")
+    target_sources(ggml PRIVATE ${_LI_PROFILER_SRC})
+    target_compile_definitions(llama PUBLIC LEANINFER_PROFILE)
+    target_compile_definitions(ggml PUBLIC LEANINFER_PROFILE)
+    message(STATUS "LeanInfer profiling ENABLED")
+endif()
+
 target_include_directories(llama PUBLIC . ../include)
 target_include_directories(llama PRIVATE ../ggml/src)
 target_compile_features   (llama PUBLIC cxx_std_17)

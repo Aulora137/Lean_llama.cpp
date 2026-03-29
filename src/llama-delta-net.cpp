@@ -103,6 +103,11 @@ std::pair<ggml_tensor *, ggml_tensor *> delta_net::build_fused_delta_net(ggml_co
     cb(g,    "g_in", il);
     cb(state,"state_in", il);
 
+    // LeanInfer Phase 1c: cast FP16 state to FP32 for delta_net op
+    if (state->type == GGML_TYPE_F16) {
+        state = ggml_cast(ctx0, state, GGML_TYPE_F32);
+    }
+
     v = ggml_permute(ctx0, v, 0, 2, 1, 3);
     g = ggml_permute(ctx0, g, 2, 0, 3, 1);
     beta = ggml_permute(ctx0, beta, 2, 0, 1, 3);
@@ -296,7 +301,8 @@ ggml_tensor * delta_net::build_qkv(ggml_context * ctx0, ggml_tensor * state_stor
 
     size_t state_row_size = 0;
     ggml_tensor * state_all = nullptr;
-    GGML_ASSERT(state_storage->type == GGML_TYPE_F32);
+    // LeanInfer Phase 1c: allow FP16 state storage (cast to FP32 happens at line 314)
+    GGML_ASSERT(state_storage->type == GGML_TYPE_F32 || state_storage->type == GGML_TYPE_F16);
     GGML_ASSERT(state_storage->ne[0] >= state_dim);
     GGML_ASSERT((uint32_t) state_storage->ne[1] == qnext_state_slots);
     state_row_size = state_storage->nb[1];
