@@ -400,9 +400,11 @@ ggml_tensor * delta_net::build_gated_output(llama_context & lctx, ggml_context *
     ggml_tensor * attn_out_2d = ggml_reshape_2d(ctx0, output, head_v_dim, num_v_heads * n_tok);
     ggml_tensor * z_2d        = ggml_reshape_2d(ctx0, z,      head_v_dim, num_v_heads * n_tok);
 
-    ggml_tensor * attn_out_norm = llm_build_context::llm_build_norm(ctx0, attn_out_2d, lctx.model.hparams, ssm_norm, nullptr, LLM_NORM_RMS, cb, il);
-    cb(attn_out_norm, "attn_rms_norm", il);
-    attn_out_norm = ggml_fused_mul_unary(ctx0, z_2d, attn_out_norm, GGML_UNARY_OP_SILU);
+    // Unfused: RMSNorm(attn_out) * SiLU(z) — equivalent to LeanInfer's ggml_fused_rms_silu_gate
+    ggml_tensor * normed = ggml_rms_norm(ctx0, attn_out_2d, lctx.model.hparams.f_norm_rms_eps);
+    normed = ggml_mul(ctx0, normed, ssm_norm);
+    ggml_tensor * gate = ggml_silu(ctx0, z_2d);
+    ggml_tensor * attn_out_norm = ggml_mul(ctx0, normed, gate);
     cb(attn_out_norm, "attn_out_norm", il);
 
     ggml_tensor * final_output = ggml_reshape_2d(ctx0, attn_out_norm, head_v_dim*num_v_heads, n_tok);
