@@ -231,6 +231,23 @@ typedef struct {
 } block_q8_0;
 static_assert(sizeof(block_q8_0) == sizeof(ggml_half) + QK8_0, "wrong q8_0 block size/padding");
 
+// LeanKV TurboQuant: 3-bit Lloyd-Max optimal quantization
+// Requires Hadamard pre-rotation (k_cache_hadamard=true) for best quality
+#define QK_TQ3 32
+typedef struct {
+    ggml_half d;        // per-block scale = max|x| (2 bytes)
+    uint8_t  qs[12];    // 32 × 3-bit packed indices (12 bytes)
+} block_tq3_0;
+static_assert(sizeof(block_tq3_0) == sizeof(ggml_half) + 12, "wrong tq3_0 block size/padding");
+
+// LeanKV TurboQuant: 4-bit Lloyd-Max optimal quantization
+#define QK_TQ4 32
+typedef struct {
+    ggml_half d;            // per-block scale = max|x| (2 bytes)
+    uint8_t  qs[QK_TQ4/2]; // 32 × 4-bit packed nibbles (16 bytes)
+} block_tq4_0;
+static_assert(sizeof(block_tq4_0) == sizeof(ggml_half) + QK_TQ4/2, "wrong tq4_0 block size/padding");
+
 #define QK8_1 32
 typedef struct {
     GGML_SCALE_TYPE1(s, ds);
@@ -2221,6 +2238,11 @@ GGML_TABLE_END()
 GGML_TABLE_BEGIN(int8_t, iq4k_values, 32)
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
     -123, -100, -79, -61, -45, -31, -18,  -6, 5, 17, 29, 42, 57, 73, 93, 117
+GGML_TABLE_END()
+
+// TurboQuant TQ4_0 Lloyd-Max codebook scaled by 127 (for PSHUFB/TBL lookup)
+GGML_TABLE_BEGIN(int8_t, tq4_values, 16)
+    -127, -96, -75, -58, -44, -31, -18, -6, 6, 18, 31, 44, 58, 75, 96, 127
 GGML_TABLE_END()
 
 GGML_TABLE_BEGIN(int8_t, iq5nl_values, 64)

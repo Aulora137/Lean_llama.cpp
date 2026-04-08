@@ -868,6 +868,38 @@ static const ggml_type_traits_t type_traits[GGML_TYPE_COUNT] = {
 #endif
         .row_meta_size            = 0,
     },
+    // LeanKV TurboQuant: 3-bit Lloyd-Max (optimal for post-Hadamard Gaussian distribution)
+    [GGML_TYPE_TQ3_0] = {
+        .type_name                = "tq3_0",
+        .blck_size                = QK_TQ3,
+        .type_size                = sizeof(block_tq3_0),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_tq3_0,
+        .from_float               = quantize_row_tq3_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_tq3_0_ref,
+        .vec_dot                  = ggml_vec_dot_tq3_0_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+        .row_meta_size            = 0,
+    },
+    // LeanKV TurboQuant: 4-bit Lloyd-Max
+    [GGML_TYPE_TQ4_0] = {
+        .type_name                = "tq4_0",
+        .blck_size                = QK_TQ4,
+        .type_size                = sizeof(block_tq4_0),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_tq4_0,
+        .from_float               = quantize_row_tq4_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_tq4_0_ref,
+        .vec_dot                  = ggml_vec_dot_tq4_0_q8_0,
+#if __AVX2__
+        .vec_dot_type             = GGML_TYPE_Q8_2_X4,
+#else
+        .vec_dot_type             = GGML_TYPE_Q8_0_X4,
+#endif
+        .nrows                    = 1,
+        .row_meta_size            = 0,
+    },
     [GGML_TYPE_Q8_1] = {
         .type_name                = "q8_1",
         .blck_size                = QK8_1,
@@ -16984,8 +17016,9 @@ static int ggml_compute_forward_mul_mat(
                     (float *)dst_next->data, dst_next->nb[1]/sizeof(float), ith, nth)) break;
                 ++node_n;
             }
+            return node_n;
         }
-        return node_n;
+        // IQK doesn't support this type — fall through to ggml vec_dot path
     }
 
     if (ith == 0) {
@@ -19435,6 +19468,8 @@ static void ggml_compute_forward_clamp(
         case GGML_TYPE_Q4_0_4_4:
         case GGML_TYPE_Q4_0_4_8:
         case GGML_TYPE_Q4_0_8_8:
+        case GGML_TYPE_TQ3_0:
+        case GGML_TYPE_TQ4_0:
         case GGML_TYPE_I8:
         case GGML_TYPE_I16:
         case GGML_TYPE_I32:

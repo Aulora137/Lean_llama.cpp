@@ -611,6 +611,40 @@ struct IQ4_NL_DequantizerS {
     }
 };
 
+// TQ4_0: Lloyd-Max 4-bit SIGNED codebook lookup via PSHUFB (like IQ4_NL_DequantizerS)
+// Uses signed path to avoid maddubs int16 saturation (codebook values up to 127 → max pair sum 32258 < 32767)
+static inline __m256i load_tq4_values_signed_256() {
+    auto val128 = _mm_loadu_si128((const __m128i *)tq4_values);
+    return MM256_SET_M128I(val128, val128);
+}
+
+struct TQ4_0_DequantizerS {
+    Dequantizer4bit b4;
+    const __m256i values = load_tq4_values_signed_256();
+    inline __m256i dequant(const block_tq4_0 * x) const {
+        return _mm256_shuffle_epi8(values, b4.dequant(x->qs));
+    }
+};
+
+// ScaleHelper for TQ4_0 signed path: like ScaleHelperQ_0 but divides d by 127
+// (TQ4_0 codebook is normalized to [-127,+127], scale d = max|block|)
+struct ScaleHelperTQ4_0_S {
+    ggml_half scales8[4];
+    template <typename Q>
+    inline __m128 prepare4(const Q * y) {
+        for (int j = 0; j < 4; ++j) scales8[j] = y[j].d;
+        return _mm_mul_ps(_mm_cvtph_ps(_mm_loadl_epi64((const __m128i *)scales8)),
+                          _mm_set1_ps(1.0f/127.0f));
+    }
+    template <typename Q>
+    inline __m128 prepare4(__m128 other_scales, const Q * y) {
+        return _mm_mul_ps(other_scales, prepare4<Q>(y));
+    }
+    template <typename Q> inline float prepare1(const Q * y) const {
+        return GGML_FP16_TO_FP32(y->d) / 127.0f;
+    }
+};
+
 //=============================
 static inline __m128i load_unsigned_mxfp4_values_128() {
     static const uint8_t kvalues_mxfp4_unsigned[16] = {12, 13, 14, 15, 16, 18, 20, 24, 12, 11, 10, 9, 8, 6, 4, 0};
@@ -785,6 +819,11 @@ struct IQ4_NL_UnpackerS final : public Q_Unpacker<block_iq4_nl, ScaleHelperQ_0, 
     IQ4_NL_UnpackerS(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
     using Sum4T = Sum4TypeQ82S;
     inline static int block_size() { return QK4_NL; }
+};
+struct TQ4_0_UnpackerS final : public Q_Unpacker<block_tq4_0, ScaleHelperTQ4_0_S, TQ4_0_DequantizerS> {
+    TQ4_0_UnpackerS(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
+    using Sum4T = Sum4TypeQ82S;
+    inline static int block_size() { return QK_TQ4; }
 };
 struct Q5_0_Unpacker final : public Q_Unpacker<block_q5_0, ScaleHelperQ_0, Q5_0_Dequantizer> {
     Q5_0_Unpacker(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
@@ -1947,7 +1986,8 @@ template <typename Dequantizer> void set_functions(std::array<mul_mat_t, IQK_MAX
     else if constexpr (std::is_same_v<Dequantizer, IQ4_NL_UnpackerU>) {
         IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_1_q8_2_T, Dequantizer, funcs)
     }
-    else if constexpr (std::is_same_v<Dequantizer, IQ4_NL_UnpackerS>) {
+    else if constexpr (std::is_same_v<Dequantizer, IQ4_NL_UnpackerS> ||
+                       std::is_same_v<Dequantizer, TQ4_0_UnpackerS>) {
         IQK_SET_MUL_MAT_FUNCTIONS_T2(mul_mat_qX_0_q8_0_T, Dequantizer, block_q8_2, funcs)
     }
     else if constexpr (std::is_same_v<Dequantizer, Q8_0_1_Unpacker> || std::is_same_v<Dequantizer, Q4_0_1_Unpacker> ||
@@ -2011,6 +2051,9 @@ bool iqk_set_kernels_legacy_quants(int ne00, int typeA, int typeB, std::array<mu
 #else
             set_functions<IQ4_NL_UnpackerS>(kernels);
 #endif
+            break;
+        case GGML_TYPE_TQ4_0:
+            set_functions<TQ4_0_UnpackerS>(kernels);
             break;
         case GGML_TYPE_MXFP4:
             set_functions<MXFP4_Unpacker>(kernels);
@@ -3381,6 +3424,11 @@ inline std::pair<mul_mat_t, int> mul_mat_kernel(int int_typeA, int nq) {
 #endif
     }
 #endif
+    else if (typeA == GGML_TYPE_TQ4_0) {
+#ifndef __aarch64__
+       MAKE_FUNCS2(mul_mat_qX_0_q8_0_T<TQ4_0_UnpackerS, block_q8_2, nq);
+#endif
+    }
     else {
         GGML_ASSERT(false);
     }
