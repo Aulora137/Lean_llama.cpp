@@ -14,8 +14,10 @@
 #include "iqk/iqk_quantize.h"
 #include "iqk/iqk_cpu_ops.h"
 
-// LeanInfer Phase 0b profiler
+// LeanInfer profiler (optional — only present when building alongside LeanInfer)
+#if __has_include("../../../instrument/leaninfer_profiler.h")
 #include "../../../instrument/leaninfer_profiler.h"
+#endif
 #if GGML_USE_IQK_MULMAT
 #include "iqk/iqk_mul_mat.h"
 #include "iqk/iqk_config.h"
