@@ -1658,6 +1658,7 @@ struct FlashAttn {
                       std::is_same_v<KHelper, HelperIQ4nl> ||
                       std::is_same_v<KHelper, HelperQ60> ||
                       std::is_same_v<KHelper, HelperTQ40> ||
+                      std::is_same_v<KHelper, HelperTQ30> ||
                       std::is_same_v<KHelper, HelperQ80R8<Dk>> ||
                       std::is_same_v<KHelper, HelperQ80> ||
                       std::is_same_v<KHelper, HelperQ8KV<Dk>> ||

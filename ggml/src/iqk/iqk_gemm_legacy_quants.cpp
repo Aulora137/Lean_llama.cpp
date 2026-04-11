@@ -825,6 +825,49 @@ struct TQ4_0_UnpackerS final : public Q_Unpacker<block_tq4_0, ScaleHelperTQ4_0_S
     using Sum4T = Sum4TypeQ82S;
     inline static int block_size() { return QK_TQ4; }
 };
+
+// TQ3_0: Lloyd-Max 3-bit SIGNED codebook lookup via scalar unpack + PSHUFB
+// 3-bit packing: 8 values in 3 bytes, 4 groups per block = 32 values in 12 bytes
+// No saturation risk: max codebook value 127, max pair sum = 127*127*2 = 32258 < 32767
+static inline __m256i load_tq3_values_signed_256() {
+    auto val128 = _mm_loadu_si128((const __m128i *)tq3_values);
+    return MM256_SET_M128I(val128, val128);
+}
+
+struct TQ3_0_DequantizerS {
+    const __m256i values = load_tq3_values_signed_256();
+
+    // Unpack 8 x 3-bit values from 3 packed bytes (same as HelperTQ30::unpack8)
+    static inline void unpack8(const uint8_t * in, uint8_t * dst) {
+        dst[0] =  in[0]       & 7;
+        dst[1] = (in[0] >> 3) & 7;
+        dst[2] = ((in[0] >> 6) & 3) | ((in[1] & 1) << 2);
+        dst[3] = (in[1] >> 1) & 7;
+        dst[4] = (in[1] >> 4) & 7;
+        dst[5] = ((in[1] >> 7) & 1) | ((in[2] & 3) << 1);
+        dst[6] = (in[2] >> 2) & 7;
+        dst[7] = (in[2] >> 5) & 7;
+    }
+
+    inline __m256i dequant(const block_tq3_0 * x) const {
+        // Unpack 32 x 3-bit indices from 12 packed bytes (4 groups of 3 bytes)
+        uint8_t indices[32];
+        unpack8(x->qs + 0, indices + 0);
+        unpack8(x->qs + 3, indices + 8);
+        unpack8(x->qs + 6, indices + 16);
+        unpack8(x->qs + 9, indices + 24);
+        // Codebook lookup via PSHUFB (indices 0-7 → signed int8 values)
+        __m256i idx = _mm256_loadu_si256((const __m256i *)indices);
+        return _mm256_shuffle_epi8(values, idx);
+    }
+};
+
+struct TQ3_0_UnpackerS final : public Q_Unpacker<block_tq3_0, ScaleHelperTQ4_0_S, TQ3_0_DequantizerS> {
+    TQ3_0_UnpackerS(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
+    using Sum4T = Sum4TypeQ82S;
+    inline static int block_size() { return QK_TQ3; }
+};
+
 struct Q5_0_Unpacker final : public Q_Unpacker<block_q5_0, ScaleHelperQ_0, Q5_0_Dequantizer> {
     Q5_0_Unpacker(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
     using Sum4T = Sum4TypeQ80;
@@ -1987,7 +2030,8 @@ template <typename Dequantizer> void set_functions(std::array<mul_mat_t, IQK_MAX
         IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_1_q8_2_T, Dequantizer, funcs)
     }
     else if constexpr (std::is_same_v<Dequantizer, IQ4_NL_UnpackerS> ||
-                       std::is_same_v<Dequantizer, TQ4_0_UnpackerS>) {
+                       std::is_same_v<Dequantizer, TQ4_0_UnpackerS> ||
+                       std::is_same_v<Dequantizer, TQ3_0_UnpackerS>) {
         IQK_SET_MUL_MAT_FUNCTIONS_T2(mul_mat_qX_0_q8_0_T, Dequantizer, block_q8_2, funcs)
     }
     else if constexpr (std::is_same_v<Dequantizer, Q8_0_1_Unpacker> || std::is_same_v<Dequantizer, Q4_0_1_Unpacker> ||
@@ -2054,6 +2098,9 @@ bool iqk_set_kernels_legacy_quants(int ne00, int typeA, int typeB, std::array<mu
             break;
         case GGML_TYPE_TQ4_0:
             set_functions<TQ4_0_UnpackerS>(kernels);
+            break;
+        case GGML_TYPE_TQ3_0:
+            set_functions<TQ3_0_UnpackerS>(kernels);
             break;
         case GGML_TYPE_MXFP4:
             set_functions<MXFP4_Unpacker>(kernels);
@@ -3478,6 +3525,14 @@ inline std::pair<mul_mat_t, int> mul_mat_kernel(int int_typeA, int nq) {
        MAKE_FUNCS(mul_mat_qX_0_q8_0<DequantizerTQ4_0, nq);
 #else
        MAKE_FUNCS2(mul_mat_qX_0_q8_0_T<TQ4_0_UnpackerS, block_q8_2, nq);
+#endif
+    }
+    else if (typeA == GGML_TYPE_TQ3_0) {
+#ifdef __aarch64__
+       // ARM TQ3_0 IQK not yet implemented — use generic vec_dot path
+       GGML_ASSERT(false);
+#else
+       MAKE_FUNCS2(mul_mat_qX_0_q8_0_T<TQ3_0_UnpackerS, block_q8_2, nq);
 #endif
     }
     else {
