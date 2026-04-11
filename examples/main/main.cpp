@@ -5,6 +5,11 @@
 #include "speculative.h"
 #if __has_include("../../instrument/leaninfer_profiler.h")
 #include "../../instrument/leaninfer_profiler.h"
+#else
+#define LI_PROFILE_INIT(n)           ((void)0)
+#define LI_PROFILE_FINISH(path)      ((void)0)
+#define LI_PROFILE_SCOPE(cat, name)  ((void)0)
+#define LI_PROFILE_COUNTER(name, val) ((void)0)
 #endif
 #include <cassert>
 #include <numeric>

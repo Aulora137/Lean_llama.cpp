@@ -32,6 +32,14 @@
 // LeanInfer profiler (optional — only present when building alongside LeanInfer)
 #if __has_include("../../instrument/leaninfer_profiler.h")
 #include "../../instrument/leaninfer_profiler.h"
+#else
+#define LI_PROFILE_INIT(n)           ((void)0)
+#define LI_PROFILE_FINISH(path)      ((void)0)
+#define LI_PROFILE_SCOPE(cat, name)  ((void)0)
+#define LI_PROFILE_COUNTER(name, val) ((void)0)
+#define LI_PROFILE_BEGIN(cat, name)  ((int64_t)0)
+#define LI_PROFILE_END(id)           ((void)0)
+#define LI_PROFILE_INSTANT(cat, name) ((void)0)
 #endif
 
 #define IK_PRINT_TIMING 0
