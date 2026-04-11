@@ -3,7 +3,9 @@
 #include "console.h"
 #include "llama.h"
 #include "speculative.h"
+#if __has_include("../../instrument/leaninfer_profiler.h")
 #include "../../instrument/leaninfer_profiler.h"
+#endif
 #include <cassert>
 #include <numeric>
 #include <cinttypes>

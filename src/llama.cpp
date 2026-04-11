@@ -29,8 +29,10 @@
 #include "iqk/iqk_quantize.h"
 #include "iqk/iqk_cpu_ops.h"
 
-// LeanInfer Phase 0a profiler
+// LeanInfer profiler (optional — only present when building alongside LeanInfer)
+#if __has_include("../../instrument/leaninfer_profiler.h")
 #include "../../instrument/leaninfer_profiler.h"
+#endif
 
 #define IK_PRINT_TIMING 0
 
