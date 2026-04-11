@@ -135,6 +135,29 @@ static inline uint8_t find_nearest_tq4(float xn) {
 
 /* ── TQ3_0 ─────────────────────────────────────────────────────────── */
 
+/* Least-squares optimal scale for given index assignment:
+ *   d_opt = sum(x[j] * L[idx[j]]) / sum(L[idx[j]]^2)
+ * Minimizes block MSE.  */
+static inline float tq3_optimal_scale(const float * block, const uint8_t * indices, int n) {
+    float num = 0.0f, den = 0.0f;
+    for (int j = 0; j < n; j++) {
+        float lev = TQ3_LEVELS[indices[j]];
+        num += block[j] * lev;
+        den += lev * lev;
+    }
+    return (den > 0.0f) ? num / den : 0.0f;
+}
+
+/* Block MSE for given indices + scale */
+static inline float tq3_block_mse(const float * block, const uint8_t * indices, float d, int n) {
+    float mse = 0.0f;
+    for (int j = 0; j < n; j++) {
+        float err = block[j] - TQ3_LEVELS[indices[j]] * d;
+        mse += err * err;
+    }
+    return mse;
+}
+
 void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ3 == 0);
     const int nb = (int)(k / QK_TQ3);
@@ -142,16 +165,21 @@ void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RE
     for (int i = 0; i < nb; i++) {
         const float * block = x + i * QK_TQ3;
 
+        /* Find max absolute value for initial scale */
         float amax = 0.0f;
         for (int j = 0; j < QK_TQ3; j++) {
             float v = fabsf(block[j]);
             if (v > amax) amax = v;
         }
 
-        const float d  = amax;
-        const float id = (d > 0.0f) ? 1.0f / d : 0.0f;
-        y[i].d = ggml_fp32_to_fp16(d);
+        if (amax == 0.0f) {
+            y[i].d = ggml_fp32_to_fp16(0.0f);
+            memset(y[i].qs, 0, 12);
+            continue;
+        }
 
+        /* Initial nearest-level assignment using max|x| scale */
+        const float id = 1.0f / amax;
         uint8_t indices[QK_TQ3];
         for (int j = 0; j < QK_TQ3; j++) {
             float xn = block[j] * id;
@@ -159,6 +187,48 @@ void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RE
             if (xn >  1.0f) xn =  1.0f;
             indices[j] = find_nearest_tq3(xn);
         }
+
+        /* Compute least-squares optimal scale */
+        float d = tq3_optimal_scale(block, indices, QK_TQ3);
+
+        /* Coordinate descent: try adjacent levels, keep if MSE improves.
+         * 2 passes suffice (converges fast per Python prototype). */
+        float best_mse = tq3_block_mse(block, indices, d, QK_TQ3);
+        for (int pass = 0; pass < 2; pass++) {
+            int improved = 0;
+            for (int j = 0; j < QK_TQ3; j++) {
+                uint8_t orig = indices[j];
+                /* Try index - 1 */
+                if (orig > 0) {
+                    indices[j] = orig - 1;
+                    float nd = tq3_optimal_scale(block, indices, QK_TQ3);
+                    float nm = tq3_block_mse(block, indices, nd, QK_TQ3);
+                    if (nm < best_mse) {
+                        best_mse = nm;
+                        d = nd;
+                        improved = 1;
+                        continue;
+                    }
+                    indices[j] = orig;
+                }
+                /* Try index + 1 */
+                if (orig < 7) {
+                    indices[j] = orig + 1;
+                    float nd = tq3_optimal_scale(block, indices, QK_TQ3);
+                    float nm = tq3_block_mse(block, indices, nd, QK_TQ3);
+                    if (nm < best_mse) {
+                        best_mse = nm;
+                        d = nd;
+                        improved = 1;
+                        continue;
+                    }
+                    indices[j] = orig;
+                }
+            }
+            if (!improved) break;
+        }
+
+        y[i].d = ggml_fp32_to_fp16(d);
 
         /* Pack 32 × 3-bit indices into 12 bytes (4 groups of 8) */
         for (int g = 0; g < 4; g++) {

@@ -706,6 +706,73 @@ struct HelperTQ40 final : public BaseHelper {
 #endif
 };
 
+struct HelperTQ30 final : public BaseHelper {
+    using Base = BaseHelper;
+    constexpr static ggml_type type = GGML_TYPE_TQ3_0;
+#ifdef __aarch64__
+    using block_q8 = block_q8_0;
+    HelperTQ30(const char * data, int stride) : Base(data, stride), values(vld1q_s8(tq3_values)) {}
+    constexpr static int block_size_q = QK8_0;
+#else
+    HelperTQ30(const char * data, int stride) : Base(data, stride) {}
+    using block_q8 = block_q8_2;
+    constexpr static int block_size_q = QK8_2;
+#endif
+
+    // Unpack 8 x 3-bit values from 3 packed bytes into dst[0..7] as uint8_t (0-7)
+    static inline void unpack8(const uint8_t * in, uint8_t * dst) {
+        dst[0] =  in[0]       & 7;
+        dst[1] = (in[0] >> 3) & 7;
+        dst[2] = ((in[0] >> 6) & 3) | ((in[1] & 1) << 2);
+        dst[3] = (in[1] >> 1) & 7;
+        dst[4] = (in[1] >> 4) & 7;
+        dst[5] = ((in[1] >> 7) & 1) | ((in[2] & 3) << 1);
+        dst[6] = (in[2] >> 2) & 7;
+        dst[7] = (in[2] >> 5) & 7;
+    }
+
+    inline void load(int l1, int i, F16::Data& v1, F16::Data& v2) const {
+        int j = F16::block_size*i;
+        auto dl = (const block_tq3_0 *)Base::lblock(l1) + j/QK_TQ3;
+        // Each block: 32 values in 12 bytes (4 groups of 8 in 3 bytes each)
+        // First half (j%32==0): groups 0,1 → bytes 0-5
+        // Second half (j%32==16): groups 2,3 → bytes 6-11
+        int byte_off = (j % QK_TQ3) ? 6 : 0;
+        uint8_t indices[16];
+        unpack8(dl->qs + byte_off, indices);
+        unpack8(dl->qs + byte_off + 3, indices + 8);
+
+#ifdef __aarch64__
+        auto vd = F16::set1((__fp16)(GGML_FP16_TO_FP32(dl->d) / 127.0f));
+        auto idx = vld1q_u8(indices);
+        auto q = vqtbl1q_s8(values, idx);
+        v1 = vmulq_f16(vd, vcvtq_f16_s16(vmovl_s8(vget_low_s8(q))));
+        v2 = vmulq_f16(vd, vcvtq_f16_s16(vmovl_s8(vget_high_s8(q))));
+#else
+        auto vd = F16::set1(GGML_FP16_TO_FP32(dl->d) / 127.0f);
+        auto idx = _mm_loadu_si128((const __m128i *)indices);
+        auto q = _mm_shuffle_epi8(values, idx);
+#ifdef __AVX512F__
+        auto ql = q;
+        auto qh = _mm_bsrli_si128(q, 8);
+        v1 = _mm512_mul_ps(vd, _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(ql)));
+        v2 = _mm512_mul_ps(vd, _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(qh)));
+#else
+        auto q16 = _mm256_cvtepi8_epi16(q);
+        v1 = _mm256_mul_ps(vd, _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(q16))));
+        v2 = _mm256_mul_ps(vd, _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(q16, 1))));
+#endif
+#endif
+    }
+
+#ifdef __aarch64__
+    const uint8x16_t mask = vdupq_n_u8(0x7);
+    const int8x16_t values;
+#else
+    const __m128i values = _mm_loadu_si128((const __m128i *)tq3_values);
+#endif
+};
+
 struct HelperQ60 final : public BaseHelper {
     constexpr static ggml_type type = GGML_TYPE_Q6_0;
 #ifdef __aarch64__
@@ -2217,6 +2284,10 @@ inline bool iqk_flash_helper_T(KHelper& kh, ggml_type type_v,
             HelperTQ40 vh(v, stride_v);
             iqk_flash_helper<Dk, Dv, k_step>(kh, vh, nq1, nk1, stride_q, stride_m, stride_qkv, q, mask, scale, softcap, qkv, sinkf, M, S);
         } break;
+        case GGML_TYPE_TQ3_0: {
+            HelperTQ30 vh(v, stride_v);
+            iqk_flash_helper<Dk, Dv, k_step>(kh, vh, nq1, nk1, stride_q, stride_m, stride_qkv, q, mask, scale, softcap, qkv, sinkf, M, S);
+        } break;
 #if GGML_IQK_FA_ALL_QUANTS
         case GGML_TYPE_Q4_0: {
             HelperQ40 vh(v, stride_v);
@@ -2262,6 +2333,10 @@ inline bool iqk_flash_helper_T(ggml_type type_k, ggml_type type_v,
         } break;
         case GGML_TYPE_TQ4_0: {
             HelperTQ40 kh(k, stride_k);
+            result = iqk_flash_helper_T<Dk, Dv, k_step>(kh, type_v, nq1, nk1, stride_q, stride_v, stride_m, stride_qkv, q, v, mask, scale, softcap, qkv, sinkf, M, S);
+        } break;
+        case GGML_TYPE_TQ3_0: {
+            HelperTQ30 kh(k, stride_k);
             result = iqk_flash_helper_T<Dk, Dv, k_step>(kh, type_v, nq1, nk1, stride_q, stride_v, stride_m, stride_qkv, q, v, mask, scale, softcap, qkv, sinkf, M, S);
         } break;
 #if GGML_IQK_FA_ALL_QUANTS

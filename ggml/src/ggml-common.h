@@ -2240,6 +2240,12 @@ GGML_TABLE_BEGIN(int8_t, iq4k_values, 32)
     -123, -100, -79, -61, -45, -31, -18,  -6, 5, 17, 29, 42, 57, 73, 93, 117
 GGML_TABLE_END()
 
+// TurboQuant TQ3_0 Lloyd-Max codebook scaled by 127 (for PSHUFB/TBL lookup)
+// 8 levels + 8 zero padding (only low 3-bit indices 0-7 are valid)
+GGML_TABLE_BEGIN(int8_t, tq3_values, 16)
+    -127, -79, -45, -14, 14, 45, 79, 127, 0, 0, 0, 0, 0, 0, 0, 0
+GGML_TABLE_END()
+
 // TurboQuant TQ4_0 Lloyd-Max codebook scaled by 127 (for PSHUFB/TBL lookup)
 GGML_TABLE_BEGIN(int8_t, tq4_values, 16)
     -127, -96, -75, -58, -44, -31, -18, -6, 6, 18, 31, 44, 58, 75, 96, 127
