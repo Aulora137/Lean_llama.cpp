@@ -1263,6 +1263,10 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
         params.cache_type_v = "q8_0";
         return true;
     }
+    if (arg == "--kv-outlier-frac") {
+        params.kv_outlier_frac = std::stof(argv[++i]);
+        return true;
+    }
     if (arg == "-ctkd" || arg == "--cache-type-k-draft") {
         params.speculative.cache_type_k = argv[++i];
         return true;
@@ -2514,6 +2518,7 @@ void gpt_params_print_usage(int /*argc*/, char ** argv, const gpt_params & param
     options.push_back({ "*",           "-ctv,  --cache-type-v TYPE",    "KV cache data type for V (default: %s)", params.cache_type_v.c_str() });
     options.push_back({ "*",           "-ctkd, --cache-type-k-draft TYPE", "KV cache data type for K for the draft model" });
     options.push_back({ "*",           "-ctvd, --cache-type-v-draft TYPE", "KV cache data type for V for the draft model" });
+    options.push_back({ "*",           "       --kv-outlier-frac N",    "fraction of outlier channels for mixed-precision KV (default: %.2f, 0=disabled)", (double)params.kv_outlier_frac });
 
     options.push_back({ "perplexity" });
     options.push_back({ "perplexity",  "       --all-logits",           "return logits for all tokens in the batch (default: %s)", params.logits_all ? "true" : "false" });
@@ -3531,6 +3536,8 @@ struct llama_context_params common_context_params_to_llama(const gpt_params & pa
     cparams.type_k = kv_cache_type_from_str(params.cache_type_k);
     cparams.type_v = kv_cache_type_from_str(params.cache_type_v);
     cparams.type_reduce = ggml_type_from_str(params.reduce_type);
+
+    cparams.kv_outlier_frac = params.kv_outlier_frac;
 
     // LeanKV: auto-enable Hadamard rotation for TurboQuant types
     // TQ3/TQ4 use Lloyd-Max codebooks optimized for post-Hadamard Gaussian distribution

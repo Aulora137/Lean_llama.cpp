@@ -11,6 +11,12 @@ struct llama_model;
 #include <set>
 #include <memory>
 
+/* LeanKV: channel permutation data for ggml_map_custom1 ops */
+struct tq_channel_perm_data {
+    int   head_dim;
+    int   perm[256];     /* perm[i] = original channel for position i */
+};
+
 struct llama_kv_cell {
     llama_pos pos   = -1;
     llama_pos delta = 0;
@@ -68,6 +74,11 @@ struct llama_kv_cache {
 
     std::vector<struct ggml_context *> ctxs;
     std::vector<ggml_backend_buffer_t> bufs;
+
+    // LeanKV: per-layer outlier channel permutation (for mixed-precision KV)
+    // Populated during KV cache init when kv_outlier_frac > 0.
+    // Used by ggml_map_custom1 ops in the attention graph.
+    std::vector<tq_channel_perm_data> outlier_perm_k;
 
     size_t total_size() const {
         size_t size = 0;

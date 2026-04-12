@@ -368,6 +368,7 @@ struct gpt_params {
 
     std::string cache_type_k = "f16"; // KV cache data type for the K
     std::string cache_type_v = "f16"; // KV cache data type for the V
+    float kv_outlier_frac = 0.0f;    // fraction of outlier channels for mixed-precision KV (0 = disabled)
 
     std::string reduce_type = "f16";
 

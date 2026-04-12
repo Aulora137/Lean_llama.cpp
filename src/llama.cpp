@@ -29,6 +29,9 @@
 #include "iqk/iqk_quantize.h"
 #include "iqk/iqk_cpu_ops.h"
 
+// LeanKV: outlier channel treatment for mixed-precision KV cache
+#include "ggml-tq-outlier.h"
+
 // LeanInfer profiler (optional — only present when building alongside LeanInfer)
 #if __has_include("../../instrument/leaninfer_profiler.h")
 #include "../../instrument/leaninfer_profiler.h"
@@ -5110,6 +5113,7 @@ struct llama_context_params llama_context_default_params() {
         /*.only_active_experts         =*/ false,
         /*.k_cache_hadamard            =*/ false,
         /*.v_cache_hadamard            =*/ false,
+        /*.kv_outlier_frac             =*/ 0.0f,
         /*.split_mode_graph_scheduling =*/ false,
         // /*.split_mode_f16           =*/ true,
         /*.scheduler_async             =*/ false,
@@ -5490,6 +5494,7 @@ struct llama_context * llama_init_from_model(
     cparams.graph_reuse      = params.graph_reuse;
     cparams.k_cache_hadamard = params.k_cache_hadamard;
     cparams.v_cache_hadamard = params.v_cache_hadamard;
+    cparams.kv_outlier_frac  = params.kv_outlier_frac;
     cparams.split_mode_graph_scheduling = params.split_mode_graph_scheduling;
     //cparams.split_mode_f16   = params.split_mode_f16;
     cparams.scheduler_async  = params.scheduler_async;
@@ -5597,6 +5602,9 @@ struct llama_context * llama_init_from_model(
     LLAMA_LOG_INFO("%s: graph_reuse   = %d\n",     __func__, cparams.graph_reuse);
     LLAMA_LOG_INFO("%s: k_cache_hadam = %d\n",     __func__, cparams.k_cache_hadamard);
     LLAMA_LOG_INFO("%s: v_cache_hadam = %d\n",     __func__, cparams.v_cache_hadamard);
+    if (cparams.kv_outlier_frac > 0.0f) {
+        LLAMA_LOG_INFO("%s: kv_outlier    = %.2f\n", __func__, cparams.kv_outlier_frac);
+    }
     LLAMA_LOG_INFO("%s: split_mode_graph_scheduling = %d\n",   __func__, cparams.split_mode_graph_scheduling);
     //LLAMA_LOG_INFO("%s: split_mode_f16= %d\n",     __func__, cparams.split_mode_f16);
     LLAMA_LOG_INFO("%s: reduce_type   = %s\n",     __func__, ggml_type_name(cparams.reduce_type));
@@ -5805,6 +5813,95 @@ struct llama_context * llama_init_from_model(
             LLAMA_LOG_ERROR("%s: llama_kv_cache_init() failed for self-attention cache\n", __func__);
             llama_free(ctx);
             return nullptr;
+        }
+
+        // LeanKV: outlier channel calibration from W_K weight norms
+        if (cparams.kv_outlier_frac > 0.0f) {
+            const int n_layer = (int)ctx->kv_self.k_l.size();
+            const int n_embd_head_k = model->hparams.n_embd_head_k;
+
+            ctx->kv_self.outlier_perm_k.resize(n_layer);
+
+            for (int il = 0; il < n_layer; il++) {
+                auto & pd = ctx->kv_self.outlier_perm_k[il];
+                pd.head_dim = n_embd_head_k;
+
+                // Compute per-channel row norms of W_K as variance proxy.
+                // W_K has shape [n_embd, n_embd_k_gqa] where n_embd_k_gqa = n_head_kv * n_embd_head_k.
+                // Each row of the output (n_embd_k_gqa dimension) corresponds to one K channel.
+                const ggml_tensor * wk = model->layers[il].wk;
+                if (wk) {
+                    const int64_t n_cols = wk->ne[0];  // n_embd (input dim)
+                    const int64_t n_rows = wk->ne[1];  // n_embd_k_gqa (output dim)
+                    const int64_t n_head_kv = n_rows / n_embd_head_k;
+
+                    // Dequantize weight matrix to FP32
+                    size_t wk_nbytes = ggml_nbytes(wk);
+                    std::vector<uint8_t> wk_raw(wk_nbytes);
+                    ggml_backend_tensor_get(wk, wk_raw.data(), 0, wk_nbytes);
+
+                    ggml_type_traits_t tt = ggml_internal_get_type_traits(wk->type);
+                    std::vector<float> wk_f32(n_rows * n_cols);
+                    if (tt.to_float) {
+                        tt.to_float(wk_raw.data(), wk_f32.data(), (int64_t)(n_rows * n_cols));
+                    } else {
+                        // F32 weights — direct copy
+                        memcpy(wk_f32.data(), wk_raw.data(), n_rows * n_cols * sizeof(float));
+                    }
+
+                    // Compute per-head-channel row L2 norms (averaged across heads)
+                    // Use first head's norms as representative (all heads share similar patterns)
+                    float channel_var[256] = {};
+                    for (int h = 0; h < (int)n_head_kv; h++) {
+                        for (int d = 0; d < n_embd_head_k; d++) {
+                            int row_idx = h * n_embd_head_k + d;
+                            float norm2 = 0.0f;
+                            const float * row = wk_f32.data() + row_idx * n_cols;
+                            for (int c = 0; c < (int)n_cols; c++) {
+                                norm2 += row[c] * row[c];
+                            }
+                            channel_var[d] += norm2 / (float)n_head_kv;
+                        }
+                    }
+
+                    // Use tq_identify_outliers to build the permutation.
+                    // We create synthetic "calibration data" from the row norms (1 token, head_dim channels).
+                    // The variance of a single sample is just the squared value relative to mean.
+                    // Simpler: just argsort channel_var directly.
+                    // But tq_identify_outliers expects [n_tokens × head_dim] calibration data.
+                    // We use a trick: create 1-token data where each channel = sqrt(channel_var).
+                    float calib_row[256];
+                    for (int d = 0; d < n_embd_head_k; d++) {
+                        calib_row[d] = sqrtf(channel_var[d]);
+                    }
+                    // With n_tokens=1, the variance is 0. Instead, feed 2 tokens: +val and -val.
+                    float calib_data[512]; // 2 * 256
+                    for (int d = 0; d < n_embd_head_k; d++) {
+                        calib_data[d] = calib_row[d];
+                        calib_data[n_embd_head_k + d] = -calib_row[d];
+                    }
+
+                    tq_outlier_config oc;
+                    tq_identify_outliers(&oc, calib_data, 2, n_embd_head_k,
+                                         cparams.kv_outlier_frac, TQ_TIER_TQ3, TQ_TIER_TQ2);
+
+                    // Copy permutation to the perm_data struct
+                    for (int d = 0; d < n_embd_head_k; d++) {
+                        pd.perm[d] = oc.perm[d];
+                    }
+
+                    if (il == 0) {
+                        LLAMA_LOG_INFO("%s: outlier K: %d/%d channels (%.0f%% outlier, layer 0)\n",
+                                       __func__, oc.n_outlier, n_embd_head_k,
+                                       cparams.kv_outlier_frac * 100.0f);
+                    }
+                } else {
+                    // No W_K tensor — identity permutation
+                    for (int d = 0; d < n_embd_head_k; d++) {
+                        pd.perm[d] = d;
+                    }
+                }
+            }
         }
 
         {

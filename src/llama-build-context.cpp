@@ -9,6 +9,36 @@
 
 #include <unordered_set>
 #include <algorithm>
+#include <cstring>
+
+/* LeanKV: channel permutation custom op for outlier treatment.
+ * Reorders elements along dimension 0 (head_dim) according to a permutation table.
+ * Applied to both K and Q so that attention dot products are preserved. */
+static void tq_channel_perm_op(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * src,
+        int ith, int nth, void * userdata) {
+    GGML_UNUSED(ith); GGML_UNUSED(nth);
+
+    const auto * pd = (const tq_channel_perm_data *)userdata;
+    const int hd = pd->head_dim;
+
+    // src and dst are contiguous F32 tensors with ne[0] = n_embd_head_k (or n_embd_head_k * n_head)
+    // and ne[1] = n_tokens (or n_tokens * n_heads depending on layout).
+    // We permute along the innermost dimension, within each head.
+    const float * x = (const float *)src->data;
+    float * y = (float *)dst->data;
+    const int64_t total = ggml_nelements(src);
+    const int64_t n_rows = total / hd;
+
+    for (int64_t r = 0; r < n_rows; r++) {
+        const float * xr = x + r * hd;
+        float * yr = y + r * hd;
+        for (int d = 0; d < hd; d++) {
+            yr[d] = xr[pd->perm[d]];
+        }
+    }
+}
 
 uint32_t llm_build_context::llama_kv_qnext_state_slots(const llama_kv_cache & kv_self) {
     uint32_t n_slots = 0;
@@ -1751,6 +1781,18 @@ ggml_tensor * llm_build_context::llm_build_kv(
     }
     if (cparams.v_cache_hadamard) {
         v_cur = ggml_hadamard(ctx, v_cur, hparams.n_embd_head_v);
+    }
+
+    // LeanKV: outlier channel permutation (applied to K and Q only)
+    // Reorders channels so that high-variance (outlier) channels are contiguous,
+    // improving per-block quantization quality.  Both K and Q get the same
+    // permutation so attention dot products Q·K^T are preserved exactly.
+    if (cparams.kv_outlier_frac > 0.0f && il < (int)kv.outlier_perm_k.size()) {
+        auto * pd = &kv.outlier_perm_k[il];
+        q_cur = ggml_map_custom1(ctx, q_cur, tq_channel_perm_op, 1, (void *)pd);
+        k_cur = ggml_map_custom1(ctx, k_cur, tq_channel_perm_op, 1, (void *)pd);
+        cb(q_cur, "Qcur_perm", il);
+        cb(k_cur, "Kcur_perm", il);
     }
 
     // these nodes are added to the graph together so that they are not reordered
