@@ -169,9 +169,37 @@ static inline uint8_t find_nearest_tq3(float xn) {
 }
 
 static inline uint8_t find_nearest_tq4(float xn) {
-    uint8_t idx = 0;
-    for (int b = 0; b < 15; b++) {
-        if (xn > TQ4_BOUNDARIES[b]) idx = (uint8_t)(b + 1);
+    // Binary search: 4 comparisons instead of 15
+    // TQ4_BOUNDARIES is sorted, symmetric around 0
+    uint8_t idx;
+    if (xn <= TQ4_BOUNDARIES[7]) {             // <= 0.0
+        if (xn <= TQ4_BOUNDARIES[3]) {         // <= -0.4025
+            if (xn <= TQ4_BOUNDARIES[1]) {     // <= -0.6748
+                idx = (xn <= TQ4_BOUNDARIES[0]) ? 0 : 1;
+            } else {
+                idx = (xn <= TQ4_BOUNDARIES[2]) ? 2 : 3;
+            }
+        } else {
+            if (xn <= TQ4_BOUNDARIES[5]) {     // <= -0.1913
+                idx = (xn <= TQ4_BOUNDARIES[4]) ? 4 : 5;
+            } else {
+                idx = (xn <= TQ4_BOUNDARIES[6]) ? 6 : 7;
+            }
+        }
+    } else {
+        if (xn <= TQ4_BOUNDARIES[11]) {        // <= +0.4025
+            if (xn <= TQ4_BOUNDARIES[9]) {     // <= +0.1913
+                idx = (xn <= TQ4_BOUNDARIES[8]) ? 8 : 9;
+            } else {
+                idx = (xn <= TQ4_BOUNDARIES[10]) ? 10 : 11;
+            }
+        } else {
+            if (xn <= TQ4_BOUNDARIES[13]) {    // <= +0.6748
+                idx = (xn <= TQ4_BOUNDARIES[12]) ? 12 : 13;
+            } else {
+                idx = (xn <= TQ4_BOUNDARIES[14]) ? 14 : 15;
+            }
+        }
     }
     return idx;
 }
