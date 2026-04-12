@@ -868,6 +868,40 @@ struct TQ3_0_UnpackerS final : public Q_Unpacker<block_tq3_0, ScaleHelperTQ4_0_S
     inline static int block_size() { return QK_TQ3; }
 };
 
+// TQ2_0: Lloyd-Max 2-bit SIGNED codebook lookup via scalar unpack + PSHUFB
+// 2-bit packing: 4 values per byte, 8 bytes per block = 32 values
+static inline __m256i load_tq2_values_signed_256() {
+    auto val128 = _mm_loadu_si128((const __m128i *)tq2_values);
+    return MM256_SET_M128I(val128, val128);
+}
+
+struct TQ2_0_DequantizerS {
+    const __m256i values = load_tq2_values_signed_256();
+
+    // Unpack 32 x 2-bit values from 8 packed bytes
+    static inline void unpack32(const uint8_t * qs, uint8_t * dst) {
+        for (int i = 0; i < 8; i++) {
+            dst[4*i+0] =  qs[i]       & 3;
+            dst[4*i+1] = (qs[i] >> 2) & 3;
+            dst[4*i+2] = (qs[i] >> 4) & 3;
+            dst[4*i+3] = (qs[i] >> 6) & 3;
+        }
+    }
+
+    inline __m256i dequant(const block_tq2_0 * x) const {
+        uint8_t indices[32];
+        unpack32(x->qs, indices);
+        __m256i idx = _mm256_loadu_si256((const __m256i *)indices);
+        return _mm256_shuffle_epi8(values, idx);
+    }
+};
+
+struct TQ2_0_UnpackerS final : public Q_Unpacker<block_tq2_0, ScaleHelperTQ4_0_S, TQ2_0_DequantizerS> {
+    TQ2_0_UnpackerS(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
+    using Sum4T = Sum4TypeQ82S;
+    inline static int block_size() { return QK_TQ2; }
+};
+
 struct Q5_0_Unpacker final : public Q_Unpacker<block_q5_0, ScaleHelperQ_0, Q5_0_Dequantizer> {
     Q5_0_Unpacker(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
     using Sum4T = Sum4TypeQ80;
@@ -2031,7 +2065,8 @@ template <typename Dequantizer> void set_functions(std::array<mul_mat_t, IQK_MAX
     }
     else if constexpr (std::is_same_v<Dequantizer, IQ4_NL_UnpackerS> ||
                        std::is_same_v<Dequantizer, TQ4_0_UnpackerS> ||
-                       std::is_same_v<Dequantizer, TQ3_0_UnpackerS>) {
+                       std::is_same_v<Dequantizer, TQ3_0_UnpackerS> ||
+                       std::is_same_v<Dequantizer, TQ2_0_UnpackerS>) {
         IQK_SET_MUL_MAT_FUNCTIONS_T2(mul_mat_qX_0_q8_0_T, Dequantizer, block_q8_2, funcs)
     }
     else if constexpr (std::is_same_v<Dequantizer, Q8_0_1_Unpacker> || std::is_same_v<Dequantizer, Q4_0_1_Unpacker> ||
@@ -2101,6 +2136,9 @@ bool iqk_set_kernels_legacy_quants(int ne00, int typeA, int typeB, std::array<mu
             break;
         case GGML_TYPE_TQ3_0:
             set_functions<TQ3_0_UnpackerS>(kernels);
+            break;
+        case GGML_TYPE_TQ2_0:
+            set_functions<TQ2_0_UnpackerS>(kernels);
             break;
         case GGML_TYPE_MXFP4:
             set_functions<MXFP4_Unpacker>(kernels);
@@ -2516,6 +2554,52 @@ struct DequantizerTQ3_0 final : public BaseLegacyDequantizer<block_tq3_0> {
     }
     static int8x16_t load_values() {
         return vld1q_s8(tq3_values);
+    }
+    inline float block_scale(int i) const { return GGML_FP16_TO_FP32(x[i].d) / 127.0f; }
+
+    const int8x16_t values = load_values();
+    static float16x4_t load_inv127() {
+        return vdup_n_f16((__fp16)(1.0f/127.0f));
+    }
+    const float16x4_t inv127 = load_inv127();
+};
+
+// TQ2_0: 2-bit Lloyd-Max codebook lookup (ARM NEON)
+// 32 values packed in 8 bytes as 4 values per byte (2-bit each).
+struct DequantizerTQ2_0 final : public BaseLegacyDequantizer<block_tq2_0> {
+
+    DequantizerTQ2_0(const void * vx, size_t bx) : BaseLegacyDequantizer(vx, bx) {}
+
+    // Unpack 32 x 2-bit values from 8 bytes into dst[0..31]
+    static inline void unpack32(const uint8_t * qs, uint8_t * dst) {
+        for (int i = 0; i < 8; i++) {
+            dst[4*i+0] =  qs[i]       & 3;
+            dst[4*i+1] = (qs[i] >> 2) & 3;
+            dst[4*i+2] = (qs[i] >> 4) & 3;
+            dst[4*i+3] = (qs[i] >> 6) & 3;
+        }
+    }
+
+    inline void prepare1(int i, int8x16_t * q) const {
+        uint8_t indices[32];
+        unpack32(x[i].qs, indices);
+        q[0] = vqtbl1q_s8(values, vld1q_u8(indices));
+        q[1] = vqtbl1q_s8(values, vld1q_u8(indices + 16));
+    }
+    inline void prepare1(int i) {
+        prepare1(i, bits.b);
+    }
+
+    inline float16x4_t new_block(int i) {
+        ggml_half aux[4];
+        for (int k = 0; k < 4; ++k) {
+            aux[k] = x[4*i+k].d;
+            prepare1(4*i+k, bits.b + 2*k);
+        }
+        return vmul_f16(vld1_f16((const float16_t *)aux), inv127);
+    }
+    static int8x16_t load_values() {
+        return vld1q_s8(tq2_values);
     }
     inline float block_scale(int i) const { return GGML_FP16_TO_FP32(x[i].d) / 127.0f; }
 
@@ -3260,6 +3344,25 @@ struct DeqTQ3_0 {
     static inline int8x16_t load_values() { return vld1q_s8(tq3_values); }
 };
 
+struct DeqTQ2_0 {
+    const int8x16_t mt = load_values();
+    // Unpack 32 x 2-bit values from 8 packed bytes
+    static inline void unpack32(const uint8_t * qs, uint8_t * dst) {
+        for (int i = 0; i < 8; i++) {
+            dst[4*i+0] =  qs[i]       & 3;
+            dst[4*i+1] = (qs[i] >> 2) & 3;
+            dst[4*i+2] = (qs[i] >> 4) & 3;
+            dst[4*i+3] = (qs[i] >> 6) & 3;
+        }
+    }
+    inline int8x16x2_t dequant(const block_tq2_0& x) const {
+        uint8_t indices[32];
+        unpack32(x.qs, indices);
+        return { vqtbl1q_s8(mt, vld1q_u8(indices)), vqtbl1q_s8(mt, vld1q_u8(indices + 16)) };
+    }
+    static inline int8x16_t load_values() { return vld1q_s8(tq2_values); }
+};
+
 struct DeqMXFP4 {
     const int8x16_t mt  = load_values();
     const uint8x16_t ml = vdupq_n_s8(0xf);
@@ -3410,6 +3513,7 @@ bool iqk_convert_legacy_quants_q8_r8(int type, int n, const void * vx, size_t bx
         case GGML_TYPE_IQ4_NL: iqk_convert_qX_q80_r8<block_iq4_nl, DeqIQ4NL>(n, vx, bx, vy, nrc_x); break;
         case GGML_TYPE_TQ4_0 : iqk_convert_qX_q80_r8<block_tq4_0, DeqTQ4_0>(n, vx, bx, vy, nrc_x); break;
         case GGML_TYPE_TQ3_0 : iqk_convert_qX_q80_r8<block_tq3_0, DeqTQ3_0>(n, vx, bx, vy, nrc_x); break;
+        case GGML_TYPE_TQ2_0 : iqk_convert_qX_q80_r8<block_tq2_0, DeqTQ2_0>(n, vx, bx, vy, nrc_x); break;
         case GGML_TYPE_MXFP4 : iqk_convert_qX_q80_r8<block_mxfp4, DeqMXFP4>(n, vx, bx, vy, nrc_x); break;
         case GGML_TYPE_Q8_0  : iqk_convert_qX_q80_r8<block_q8_0, DeqQ80>(n, vx, bx, vy, nrc_x); break;
         default: return false;
@@ -3454,6 +3558,9 @@ bool iqk_set_kernels_legacy_quants(int ne00, int typeA, int typeB, std::array<mu
             break;
         case GGML_TYPE_TQ3_0:
             IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_0_q8_0, DequantizerTQ3_0, kernels);
+            break;
+        case GGML_TYPE_TQ2_0:
+            IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_0_q8_0, DequantizerTQ2_0, kernels);
             break;
         case GGML_TYPE_MXFP4:
             IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_0_q8_0, DequantizerMXFP4, kernels);
@@ -3612,6 +3719,13 @@ inline std::pair<mul_mat_t, int> mul_mat_kernel(int int_typeA, int nq) {
        MAKE_FUNCS(mul_mat_qX_0_q8_0<DequantizerTQ3_0, nq);
 #else
        MAKE_FUNCS2(mul_mat_qX_0_q8_0_T<TQ3_0_UnpackerS, block_q8_2, nq);
+#endif
+    }
+    else if (typeA == GGML_TYPE_TQ2_0) {
+#ifdef __aarch64__
+       MAKE_FUNCS(mul_mat_qX_0_q8_0<DequantizerTQ2_0, nq);
+#else
+       MAKE_FUNCS2(mul_mat_qX_0_q8_0_T<TQ2_0_UnpackerS, block_q8_2, nq);
 #endif
     }
     else {

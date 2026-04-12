@@ -773,6 +773,75 @@ struct HelperTQ30 final : public BaseHelper {
 #endif
 };
 
+struct HelperTQ20 final : public BaseHelper {
+    using Base = BaseHelper;
+    constexpr static ggml_type type = GGML_TYPE_TQ2_0;
+#ifdef __aarch64__
+    using block_q8 = block_q8_0;
+    HelperTQ20(const char * data, int stride) : Base(data, stride), values(vld1q_s8(tq2_values)) {}
+    constexpr static int block_size_q = QK8_0;
+#else
+    HelperTQ20(const char * data, int stride) : Base(data, stride) {}
+    using block_q8 = block_q8_2;
+    constexpr static int block_size_q = QK8_2;
+#endif
+
+    // Unpack 32 x 2-bit values from 8 packed bytes into dst[0..31]
+    static inline void unpack32(const uint8_t * qs, uint8_t * dst) {
+        for (int i = 0; i < 8; i++) {
+            dst[4*i+0] =  qs[i]       & 3;
+            dst[4*i+1] = (qs[i] >> 2) & 3;
+            dst[4*i+2] = (qs[i] >> 4) & 3;
+            dst[4*i+3] = (qs[i] >> 6) & 3;
+        }
+    }
+
+    inline void load(int l1, int i, F16::Data& v1, F16::Data& v2) const {
+        int j = F16::block_size*i;
+        auto dl = (const block_tq2_0 *)Base::lblock(l1) + j/QK_TQ2;
+        // Each block: 32 values in 8 bytes (4 values per byte)
+        // First half (j%32==0): indices 0-15 → bytes 0-3
+        // Second half (j%32==16): indices 16-31 → bytes 4-7
+        int byte_off = (j % QK_TQ2) ? 4 : 0;
+        uint8_t indices[16];
+        for (int b = 0; b < 4; b++) {
+            uint8_t q = dl->qs[byte_off + b];
+            indices[4*b+0] =  q       & 3;
+            indices[4*b+1] = (q >> 2) & 3;
+            indices[4*b+2] = (q >> 4) & 3;
+            indices[4*b+3] = (q >> 6) & 3;
+        }
+
+#ifdef __aarch64__
+        auto vd = F16::set1((__fp16)(GGML_FP16_TO_FP32(dl->d) / 127.0f));
+        auto idx = vld1q_u8(indices);
+        auto q = vqtbl1q_s8(values, idx);
+        v1 = vmulq_f16(vd, vcvtq_f16_s16(vmovl_s8(vget_low_s8(q))));
+        v2 = vmulq_f16(vd, vcvtq_f16_s16(vmovl_s8(vget_high_s8(q))));
+#else
+        auto vd = F16::set1(GGML_FP16_TO_FP32(dl->d) / 127.0f);
+        auto idx = _mm_loadu_si128((const __m128i *)indices);
+        auto q = _mm_shuffle_epi8(values, idx);
+#ifdef __AVX512F__
+        auto ql = q;
+        auto qh = _mm_bsrli_si128(q, 8);
+        v1 = _mm512_mul_ps(vd, _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(ql)));
+        v2 = _mm512_mul_ps(vd, _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(qh)));
+#else
+        auto q16 = _mm256_cvtepi8_epi16(q);
+        v1 = _mm256_mul_ps(vd, _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(q16))));
+        v2 = _mm256_mul_ps(vd, _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(q16, 1))));
+#endif
+#endif
+    }
+
+#ifdef __aarch64__
+    const int8x16_t values;
+#else
+    const __m128i values = _mm_loadu_si128((const __m128i *)tq2_values);
+#endif
+};
+
 struct HelperQ60 final : public BaseHelper {
     constexpr static ggml_type type = GGML_TYPE_Q6_0;
 #ifdef __aarch64__
@@ -1659,6 +1728,7 @@ struct FlashAttn {
                       std::is_same_v<KHelper, HelperQ60> ||
                       std::is_same_v<KHelper, HelperTQ40> ||
                       std::is_same_v<KHelper, HelperTQ30> ||
+                      std::is_same_v<KHelper, HelperTQ20> ||
                       std::is_same_v<KHelper, HelperQ80R8<Dk>> ||
                       std::is_same_v<KHelper, HelperQ80> ||
                       std::is_same_v<KHelper, HelperQ8KV<Dk>> ||
@@ -2289,6 +2359,10 @@ inline bool iqk_flash_helper_T(KHelper& kh, ggml_type type_v,
             HelperTQ30 vh(v, stride_v);
             iqk_flash_helper<Dk, Dv, k_step>(kh, vh, nq1, nk1, stride_q, stride_m, stride_qkv, q, mask, scale, softcap, qkv, sinkf, M, S);
         } break;
+        case GGML_TYPE_TQ2_0: {
+            HelperTQ20 vh(v, stride_v);
+            iqk_flash_helper<Dk, Dv, k_step>(kh, vh, nq1, nk1, stride_q, stride_m, stride_qkv, q, mask, scale, softcap, qkv, sinkf, M, S);
+        } break;
 #if GGML_IQK_FA_ALL_QUANTS
         case GGML_TYPE_Q4_0: {
             HelperQ40 vh(v, stride_v);
@@ -2338,6 +2412,10 @@ inline bool iqk_flash_helper_T(ggml_type type_k, ggml_type type_v,
         } break;
         case GGML_TYPE_TQ3_0: {
             HelperTQ30 kh(k, stride_k);
+            result = iqk_flash_helper_T<Dk, Dv, k_step>(kh, type_v, nq1, nk1, stride_q, stride_v, stride_m, stride_qkv, q, v, mask, scale, softcap, qkv, sinkf, M, S);
+        } break;
+        case GGML_TYPE_TQ2_0: {
+            HelperTQ20 kh(k, stride_k);
             result = iqk_flash_helper_T<Dk, Dv, k_step>(kh, type_v, nq1, nk1, stride_q, stride_v, stride_m, stride_qkv, q, v, mask, scale, softcap, qkv, sinkf, M, S);
         } break;
 #if GGML_IQK_FA_ALL_QUANTS

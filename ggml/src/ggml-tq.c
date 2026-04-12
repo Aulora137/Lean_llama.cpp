@@ -1,5 +1,5 @@
 /**
- * ggml-tq.c — TurboQuant TQ3_0/TQ4_0 quantize/dequantize for ggml
+ * ggml-tq.c — TurboQuant TQ2_0/TQ3_0/TQ4_0 quantize/dequantize for ggml
  *
  * Lloyd-Max optimal scalar quantization with pre-computed codebooks.
  * Designed for use with Hadamard pre-rotation (k_cache_hadamard=true)
@@ -48,6 +48,15 @@ static inline float hsum_float_8(const __m256 x) {
  * Per-block scale d = max(|block|) maps data to this range.
  * ──────────────────────────────────────────────────────────────────── */
 
+/* 2-bit: 4 levels, 3 boundaries */
+static const float TQ2_LEVELS[4] = {
+    -1.0000000f, -0.2997714f, +0.2997714f, +1.0000000f,
+};
+
+static const float TQ2_BOUNDARIES[3] = {
+    -0.6498857f, +0.0000000f, +0.6498857f,
+};
+
 static const float TQ3_LEVELS[8] = {
     -1.0000000f, -0.6245203f, -0.3513239f, -0.1138989f,
     +0.1138989f, +0.3513239f, +0.6245203f, +1.0000000f,
@@ -74,6 +83,10 @@ static const float TQ4_BOUNDARIES[15] = {
 
 /* Int8-scaled codebooks for SIMD table lookup (scale factor = 127)
  * round(LEVELS[i] * 127). Divide by 127 after integer dot product. */
+static const int8_t TQ2_LEVELS_I8[16] = {
+    -127, -38, +38, +127,
+       0,   0,   0,    0,   0,   0,   0,   0,   0,   0,   0,   0,  /* padding for PSHUFB */
+};
 static const int8_t TQ3_LEVELS_I8[16] = {
     -127, -79, -45, -14, +14, +45, +79, +127,
        0,   0,   0,   0,   0,   0,   0,    0,  /* padding for PSHUFB */
@@ -82,6 +95,28 @@ static const int8_t TQ4_LEVELS_I8[16] = {
     -127, -96, -75, -58, -44, -31, -18, -6,
       +6, +18, +31, +44, +58, +75, +96, +127,
 };
+
+/* ── 2-bit packing: 4 values (2-bit each) → 1 byte ───────────────── */
+
+static inline void pack_2bit_32(const uint8_t indices[32], uint8_t qs[8]) {
+    for (int i = 0; i < 8; i++) {
+        qs[i] = (uint8_t)(
+            (indices[4*i+0] & 3)        |
+            ((indices[4*i+1] & 3) << 2) |
+            ((indices[4*i+2] & 3) << 4) |
+            ((indices[4*i+3] & 3) << 6)
+        );
+    }
+}
+
+static inline void unpack_2bit_32(const uint8_t qs[8], uint8_t indices[32]) {
+    for (int i = 0; i < 8; i++) {
+        indices[4*i+0] =  qs[i]       & 3;
+        indices[4*i+1] = (qs[i] >> 2) & 3;
+        indices[4*i+2] = (qs[i] >> 4) & 3;
+        indices[4*i+3] = (qs[i] >> 6) & 3;
+    }
+}
 
 /* ── 3-bit packing: 8 values (3-bit each) → 3 bytes ───────────────── */
 
@@ -117,6 +152,14 @@ static inline void unpack_3bit_group(const uint8_t in[3], uint8_t idx[8]) {
 
 /* ── Nearest-level lookup ──────────────────────────────────────────── */
 
+static inline uint8_t find_nearest_tq2(float xn) {
+    uint8_t idx = 0;
+    for (int b = 0; b < 3; b++) {
+        if (xn > TQ2_BOUNDARIES[b]) idx = (uint8_t)(b + 1);
+    }
+    return idx;
+}
+
 static inline uint8_t find_nearest_tq3(float xn) {
     uint8_t idx = 0;
     for (int b = 0; b < 7; b++) {
@@ -131,6 +174,59 @@ static inline uint8_t find_nearest_tq4(float xn) {
         if (xn > TQ4_BOUNDARIES[b]) idx = (uint8_t)(b + 1);
     }
     return idx;
+}
+
+/* ── TQ2_0 ─────────────────────────────────────────────────────────── */
+
+void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ2 == 0);
+    const int nb = (int)(k / QK_TQ2);
+
+    for (int i = 0; i < nb; i++) {
+        const float * block = x + i * QK_TQ2;
+
+        /* Find max absolute value for block scale */
+        float amax = 0.0f;
+        for (int j = 0; j < QK_TQ2; j++) {
+            float v = fabsf(block[j]);
+            if (v > amax) amax = v;
+        }
+
+        const float d = amax;
+        y[i].d = GGML_FP32_TO_FP16(d);
+
+        if (amax < 1e-10f) {
+            memset(y[i].qs, 0, sizeof(y[i].qs));
+            continue;
+        }
+
+        const float id = 1.0f / d;
+        uint8_t indices[QK_TQ2];
+        for (int j = 0; j < QK_TQ2; j++) {
+            float xn = block[j] * id;  /* normalized to [-1, 1] */
+            indices[j] = find_nearest_tq2(xn);
+        }
+
+        pack_2bit_32(indices, y[i].qs);
+    }
+}
+
+void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ2 == 0);
+    const int nb = (int)(k / QK_TQ2);
+
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+        uint8_t indices[QK_TQ2];
+        unpack_2bit_32(x[i].qs, indices);
+        for (int j = 0; j < QK_TQ2; j++) {
+            y[i * QK_TQ2 + j] = TQ2_LEVELS[indices[j]] * d;
+        }
+    }
+}
+
+void quantize_row_tq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_tq2_0_ref(x, (block_tq2_0 *)y, k);
 }
 
 /* ── TQ3_0 ─────────────────────────────────────────────────────────── */
@@ -510,6 +606,106 @@ void ggml_vec_dot_tq4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
             const uint8_t i1 = x[ib].qs[j] >> 4;
             block_sum += TQ4_LEVELS[i0] * (float)y[ib].qs[j];
             block_sum += TQ4_LEVELS[i1] * (float)y[ib].qs[j + qk / 2];
+        }
+        sumf += d_tq * d_q8 * block_sum;
+    }
+
+    *s = sumf;
+}
+
+/* ── vec_dot: TQ2_0 · Q8_0 ───────────────────────────────────────── */
+
+void ggml_vec_dot_tq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    const int qk = QK_TQ2;
+    const int nb = n / qk;
+
+    assert(n % qk == 0);
+    assert(nrc == 1);
+    (void)bs; (void)bx; (void)by; (void)nrc;
+
+    const block_tq2_0 * GGML_RESTRICT x = (const block_tq2_0 *) vx;
+    const block_q8_0  * GGML_RESTRICT y = (const block_q8_0  *) vy;
+
+    float sumf = 0.0f;
+    int ib = 0;
+
+#if defined(__ARM_NEON)
+    const int8x16_t values = vld1q_s8(TQ2_LEVELS_I8);
+    const uint8x16_t m2b = vdupq_n_u8(0x03);
+    int32x4_t prod_1, prod_2;
+
+    for (; ib + 1 < nb; ib += 2) {
+        /* Unpack 2-bit indices to bytes for two blocks */
+        uint8_t indices_0[32], indices_1[32];
+        unpack_2bit_32(x[ib + 0].qs, indices_0);
+        unpack_2bit_32(x[ib + 1].qs, indices_1);
+
+        /* Table lookup */
+        const int8x16_t q2b_0_lo = ggml_vqtbl1q_s8(values, vld1q_u8(indices_0));
+        const int8x16_t q2b_0_hi = ggml_vqtbl1q_s8(values, vld1q_u8(indices_0 + 16));
+        const int8x16_t q2b_1_lo = ggml_vqtbl1q_s8(values, vld1q_u8(indices_1));
+        const int8x16_t q2b_1_hi = ggml_vqtbl1q_s8(values, vld1q_u8(indices_1 + 16));
+
+        const int8x16_t q8b_0_lo = vld1q_s8(y[ib + 0].qs);
+        const int8x16_t q8b_0_hi = vld1q_s8(y[ib + 0].qs + 16);
+        const int8x16_t q8b_1_lo = vld1q_s8(y[ib + 1].qs);
+        const int8x16_t q8b_1_hi = vld1q_s8(y[ib + 1].qs + 16);
+
+        prod_1 = ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), q2b_0_lo, q8b_0_lo), q2b_0_hi, q8b_0_hi);
+        prod_2 = ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), q2b_1_lo, q8b_1_lo), q2b_1_hi, q8b_1_hi);
+        sumf +=
+            GGML_FP16_TO_FP32(x[ib+0].d) * GGML_FP16_TO_FP32(y[ib+0].d) / 127.0f * (float)vaddvq_s32(prod_1) +
+            GGML_FP16_TO_FP32(x[ib+1].d) * GGML_FP16_TO_FP32(y[ib+1].d) / 127.0f * (float)vaddvq_s32(prod_2);
+    }
+#elif defined(__AVX2__)
+    const __m128i values128 = _mm_loadu_si128((const __m128i *)TQ2_LEVELS_I8);
+    const __m256i values256 = MM256_SET_M128I(values128, values128);
+    const __m256i mone = _mm256_set1_epi16(1);
+    __m256 accum1 = _mm256_setzero_ps();
+    __m256 accum2 = _mm256_setzero_ps();
+
+    for (; ib + 1 < nb; ib += 2) {
+        /* Unpack 2-bit to 8-bit indices then PSHUFB lookup */
+        uint8_t indices_0[32], indices_1[32];
+        unpack_2bit_32(x[ib + 0].qs, indices_0);
+        unpack_2bit_32(x[ib + 1].qs, indices_1);
+
+        __m256i idx256_0 = _mm256_loadu_si256((const __m256i *)indices_0);
+        __m256i idx256_1 = _mm256_loadu_si256((const __m256i *)indices_1);
+        __m256i q2b_0 = _mm256_shuffle_epi8(values256, idx256_0);
+        __m256i q2b_1 = _mm256_shuffle_epi8(values256, idx256_1);
+
+        const __m256i q8b_0 = _mm256_loadu_si256((const __m256i *)y[ib + 0].qs);
+        const __m256i q8b_1 = _mm256_loadu_si256((const __m256i *)y[ib + 1].qs);
+
+        const __m256i p16_0 = mul_add_epi8(q2b_0, q8b_0);
+        const __m256i p16_1 = mul_add_epi8(q2b_1, q8b_1);
+        const __m256i p_0 = _mm256_madd_epi16(p16_0, mone);
+        const __m256i p_1 = _mm256_madd_epi16(p16_1, mone);
+
+        accum1 = _mm256_fmadd_ps(
+            _mm256_set1_ps(GGML_FP16_TO_FP32(y[ib+0].d) * GGML_FP16_TO_FP32(x[ib+0].d) / 127.0f),
+            _mm256_cvtepi32_ps(p_0), accum1);
+        accum2 = _mm256_fmadd_ps(
+            _mm256_set1_ps(GGML_FP16_TO_FP32(y[ib+1].d) * GGML_FP16_TO_FP32(x[ib+1].d) / 127.0f),
+            _mm256_cvtepi32_ps(p_1), accum2);
+    }
+    sumf = hsum_float_8(_mm256_add_ps(accum1, accum2));
+#endif
+
+    /* Scalar fallback for remaining blocks */
+    for (; ib < nb; ib++) {
+        const float d_tq = GGML_FP16_TO_FP32(x[ib].d);
+        const float d_q8 = GGML_FP16_TO_FP32(y[ib].d);
+
+        uint8_t indices[QK_TQ2];
+        unpack_2bit_32(x[ib].qs, indices);
+
+        float block_sum = 0.0f;
+        for (int j = 0; j < qk; j++) {
+            block_sum += TQ2_LEVELS[indices[j]] * (float)y[ib].qs[j];
         }
         sumf += d_tq * d_q8 * block_sum;
     }

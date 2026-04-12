@@ -113,12 +113,14 @@ static inline const std::unordered_set<ggml_type> & supported_kv_types() {
         GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q8_KV, GGML_TYPE_Q6_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_IQ4_NL,
         GGML_TYPE_TQ4_0,
         GGML_TYPE_TQ3_0,
+        GGML_TYPE_TQ2_0,
     };
 #else
     static std::unordered_set<ggml_type> k_supported = {
         GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q8_KV, GGML_TYPE_Q6_0,
         GGML_TYPE_TQ4_0,
         GGML_TYPE_TQ3_0,
+        GGML_TYPE_TQ2_0,
     };
 #endif
     return k_supported;

@@ -3379,6 +3379,9 @@ static ggml_type kv_cache_type_from_str(const std::string & s) {
     if (s == "q8_KV") {
         return GGML_TYPE_Q8_KV;
     }
+    if (s == "tq2_0") {
+        return GGML_TYPE_TQ2_0;
+    }
     if (s == "tq3_0") {
         return GGML_TYPE_TQ3_0;
     }
@@ -3531,10 +3534,10 @@ struct llama_context_params common_context_params_to_llama(const gpt_params & pa
 
     // LeanKV: auto-enable Hadamard rotation for TurboQuant types
     // TQ3/TQ4 use Lloyd-Max codebooks optimized for post-Hadamard Gaussian distribution
-    if (cparams.type_k == GGML_TYPE_TQ3_0 || cparams.type_k == GGML_TYPE_TQ4_0) {
+    if (cparams.type_k == GGML_TYPE_TQ2_0 || cparams.type_k == GGML_TYPE_TQ3_0 || cparams.type_k == GGML_TYPE_TQ4_0) {
         cparams.k_cache_hadamard = true;
     }
-    if (cparams.type_v == GGML_TYPE_TQ3_0 || cparams.type_v == GGML_TYPE_TQ4_0) {
+    if (cparams.type_v == GGML_TYPE_TQ2_0 || cparams.type_v == GGML_TYPE_TQ3_0 || cparams.type_v == GGML_TYPE_TQ4_0) {
         cparams.v_cache_hadamard = true;
     }
 
