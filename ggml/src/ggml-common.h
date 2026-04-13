@@ -257,6 +257,22 @@ typedef struct {
 } block_tq4_0;
 static_assert(sizeof(block_tq4_0) == sizeof(ggml_half) + QK_TQ4/2, "wrong tq4_0 block size/padding");
 
+// LeanKV TurboQuant: mixed-precision 2.75-bit (outlier TQ3 + normal TQ2)
+// 128 elements per block: 32 outlier channels at 3.5 bpe + 96 normal channels at 2.5 bpe
+// Requires head_dim=128 and outlier channel permutation (--kv-outlier-frac 0.25)
+#define QK_TQ2_1 128
+typedef struct {
+    ggml_half d_out;       // outlier block scale (32 elements, TQ3 encoding)
+    uint8_t   qs_out[12];  // 32 × 3-bit packed indices
+    ggml_half d_n0;        // normal block 0 scale (elements 32-63, TQ2 encoding)
+    uint8_t   qs_n0[8];    // 32 × 2-bit packed indices
+    ggml_half d_n1;        // normal block 1 scale (elements 64-95)
+    uint8_t   qs_n1[8];
+    ggml_half d_n2;        // normal block 2 scale (elements 96-127)
+    uint8_t   qs_n2[8];
+} block_tq2_1;
+static_assert(sizeof(block_tq2_1) == 44, "wrong tq2_1 block size/padding");
+
 #define QK8_1 32
 typedef struct {
     GGML_SCALE_TYPE1(s, ds);

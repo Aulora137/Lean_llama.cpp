@@ -740,3 +740,129 @@ void ggml_vec_dot_tq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
 
     *s = sumf;
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ * TQ2_1: Mixed-precision TQ3 (outlier) + TQ2 (normal), 2.75 bits/elem
+ * Block size: 128 elements (32 outlier as TQ3, 96 normal as 3×TQ2)
+ * ══════════════════════════════════════════════════════════════════════ */
+
+void dequantize_row_tq2_1(const block_tq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ2_1 == 0);
+    const int nb = (int)(k / QK_TQ2_1);
+
+    for (int i = 0; i < nb; i++) {
+        float * out = y + i * QK_TQ2_1;
+
+        /* Outlier region: 32 elements, TQ3 encoding */
+        {
+            const float d = GGML_FP16_TO_FP32(x[i].d_out);
+            uint8_t indices[32];
+            unpack_3bit_group(x[i].qs_out +  0, indices +  0);
+            unpack_3bit_group(x[i].qs_out +  3, indices +  8);
+            unpack_3bit_group(x[i].qs_out +  6, indices + 16);
+            unpack_3bit_group(x[i].qs_out +  9, indices + 24);
+            for (int j = 0; j < 32; j++) {
+                out[j] = TQ3_LEVELS[indices[j]] * d;
+            }
+        }
+
+        /* Normal region: 3 × TQ2 blocks (96 elements) */
+        const ggml_half * d_ptrs[3] = { &x[i].d_n0, &x[i].d_n1, &x[i].d_n2 };
+        const uint8_t * qs_ptrs[3] = { x[i].qs_n0, x[i].qs_n1, x[i].qs_n2 };
+
+        for (int b = 0; b < 3; b++) {
+            const float d = GGML_FP16_TO_FP32(*d_ptrs[b]);
+            uint8_t indices[32];
+            unpack_2bit_32(qs_ptrs[b], indices);
+            for (int j = 0; j < 32; j++) {
+                out[32 + b * 32 + j] = TQ2_LEVELS[indices[j]] * d;
+            }
+        }
+    }
+}
+
+void quantize_row_tq2_1_ref(const float * GGML_RESTRICT x, block_tq2_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ2_1 == 0);
+    const int nb = (int)(k / QK_TQ2_1);
+
+    for (int i = 0; i < nb; i++) {
+        const float * block = x + i * QK_TQ2_1;
+
+        /* Quantize outlier region (elements 0-31) as TQ3 */
+        {
+            block_tq3_0 tmp;
+            quantize_row_tq3_0_ref(block, &tmp, 32);
+            y[i].d_out = tmp.d;
+            memcpy(y[i].qs_out, tmp.qs, 12);
+        }
+
+        /* Quantize normal region (elements 32-127) as 3 × TQ2 blocks */
+        {
+            block_tq2_0 tmp[3];
+            quantize_row_tq2_0_ref(block + 32, tmp, 96);
+            y[i].d_n0 = tmp[0].d;
+            memcpy(y[i].qs_n0, tmp[0].qs, 8);
+            y[i].d_n1 = tmp[1].d;
+            memcpy(y[i].qs_n1, tmp[1].qs, 8);
+            y[i].d_n2 = tmp[2].d;
+            memcpy(y[i].qs_n2, tmp[2].qs, 8);
+        }
+    }
+}
+
+void quantize_row_tq2_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_tq2_1_ref(x, (block_tq2_1 *)y, k);
+}
+
+void ggml_vec_dot_tq2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_TQ2_1 == 0);
+    assert(nrc == 1);
+    (void)bs; (void)bx; (void)by; (void)nrc;
+
+    const block_tq2_1 * GGML_RESTRICT x2 = (const block_tq2_1 *) vx;
+    const block_q8_0  * GGML_RESTRICT y8 = (const block_q8_0  *) vy;
+
+    const int nb = n / QK_TQ2_1;
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; i++) {
+        /* Q8_0 blocks for this TQ2_1 block: 128 elements = 4 Q8_0 blocks */
+        const block_q8_0 * yb = y8 + i * 4;
+
+        /* Outlier TQ3 region: 32 elements -> 1 Q8_0 block */
+        {
+            const float d_tq = GGML_FP16_TO_FP32(x2[i].d_out);
+            const float d_q8 = GGML_FP16_TO_FP32(yb[0].d);
+            uint8_t indices[32];
+            unpack_3bit_group(x2[i].qs_out +  0, indices +  0);
+            unpack_3bit_group(x2[i].qs_out +  3, indices +  8);
+            unpack_3bit_group(x2[i].qs_out +  6, indices + 16);
+            unpack_3bit_group(x2[i].qs_out +  9, indices + 24);
+            float block_sum = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                block_sum += TQ3_LEVELS[indices[j]] * (float)yb[0].qs[j];
+            }
+            sumf += d_tq * d_q8 * block_sum;
+        }
+
+        /* Normal TQ2 regions: 3 x 32 elements -> 3 Q8_0 blocks */
+        const ggml_half * d_ptrs[3] = { &x2[i].d_n0, &x2[i].d_n1, &x2[i].d_n2 };
+        const uint8_t * qs_ptrs[3] = { x2[i].qs_n0, x2[i].qs_n1, x2[i].qs_n2 };
+
+        for (int b = 0; b < 3; b++) {
+            const float d_tq = GGML_FP16_TO_FP32(*d_ptrs[b]);
+            const float d_q8 = GGML_FP16_TO_FP32(yb[1 + b].d);
+            uint8_t indices[32];
+            unpack_2bit_32(qs_ptrs[b], indices);
+            float block_sum = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                block_sum += TQ2_LEVELS[indices[j]] * (float)yb[1 + b].qs[j];
+            }
+            sumf += d_tq * d_q8 * block_sum;
+        }
+    }
+
+    *s = sumf;
+}

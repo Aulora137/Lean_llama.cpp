@@ -2618,6 +2618,225 @@ void dequantize_q8_0_t4(device const block_q8_0 *xb, short il, thread type4 & re
     }
 }
 
+// LeanKV TurboQuant dequantize functions for Metal
+// TQ types use Lloyd-Max optimal codebooks stored in tq*_values (ggml-common.h)
+// Formula: value = tq_values[index] * (d / 127.0f)
+
+// TQ2_0: 2-bit indices, 4 per byte, 8 bytes for 32 elements
+template <typename type4x4>
+void dequantize_tq2_0(device const block_tq2_0 *xb, short il, thread type4x4 & reg) {
+    // il=0: elements 0-15 (bytes 0-3), il=1: elements 16-31 (bytes 4-7)
+    device const uint8_t * qs = xb->qs + 4*il;
+    const float d = xb->d / 127.0h;
+    for (int i = 0; i < 4; i++) {
+        const uint8_t byte = qs[i];
+        reg[i][0] = tq2_values[ byte       & 3] * d;
+        reg[i][1] = tq2_values[(byte >> 2) & 3] * d;
+        reg[i][2] = tq2_values[(byte >> 4) & 3] * d;
+        reg[i][3] = tq2_values[(byte >> 6) & 3] * d;
+    }
+}
+
+template <typename type4>
+void dequantize_tq2_0_t4(device const block_tq2_0 *xb, short il, thread type4 & reg) {
+    // il=0..7, each loads 4 elements from one byte
+    device const uint8_t * qs = xb->qs;
+    const float d = xb->d / 127.0h;
+    const uint8_t byte = qs[il];
+    reg[0] = tq2_values[ byte       & 3] * d;
+    reg[1] = tq2_values[(byte >> 2) & 3] * d;
+    reg[2] = tq2_values[(byte >> 4) & 3] * d;
+    reg[3] = tq2_values[(byte >> 6) & 3] * d;
+}
+
+// TQ3_0: 3-bit indices, 8 per 3-byte group, 12 bytes for 32 elements
+// Packing: 4 groups × (8 indices × 3 bits = 24 bits = 3 bytes)
+template <typename type4x4>
+void dequantize_tq3_0(device const block_tq3_0 *xb, short il, thread type4x4 & reg) {
+    // il=0: elements 0-15 (groups 0-1, bytes 0-5), il=1: elements 16-31 (groups 2-3, bytes 6-11)
+    const float d = xb->d / 127.0h;
+    // Group 0: elements 0-7 → reg[0][0..3], reg[1][0..3]
+    {
+        device const uint8_t * in = xb->qs + il*2 * 3;
+        const uint8_t b0 = in[0], b1 = in[1], b2 = in[2];
+        reg[0][0] = tq3_values[ b0       & 7] * d;
+        reg[0][1] = tq3_values[(b0 >> 3) & 7] * d;
+        reg[0][2] = tq3_values[((b0 >> 6) & 3) | ((b1 & 1) << 2)] * d;
+        reg[0][3] = tq3_values[(b1 >> 1) & 7] * d;
+        reg[1][0] = tq3_values[(b1 >> 4) & 7] * d;
+        reg[1][1] = tq3_values[((b1 >> 7) & 1) | ((b2 & 3) << 1)] * d;
+        reg[1][2] = tq3_values[(b2 >> 2) & 7] * d;
+        reg[1][3] = tq3_values[(b2 >> 5) & 7] * d;
+    }
+    // Group 1: elements 8-15 → reg[2][0..3], reg[3][0..3]
+    {
+        device const uint8_t * in = xb->qs + (il*2 + 1) * 3;
+        const uint8_t b0 = in[0], b1 = in[1], b2 = in[2];
+        reg[2][0] = tq3_values[ b0       & 7] * d;
+        reg[2][1] = tq3_values[(b0 >> 3) & 7] * d;
+        reg[2][2] = tq3_values[((b0 >> 6) & 3) | ((b1 & 1) << 2)] * d;
+        reg[2][3] = tq3_values[(b1 >> 1) & 7] * d;
+        reg[3][0] = tq3_values[(b1 >> 4) & 7] * d;
+        reg[3][1] = tq3_values[((b1 >> 7) & 1) | ((b2 & 3) << 1)] * d;
+        reg[3][2] = tq3_values[(b2 >> 2) & 7] * d;
+        reg[3][3] = tq3_values[(b2 >> 5) & 7] * d;
+    }
+}
+
+template <typename type4>
+void dequantize_tq3_0_t4(device const block_tq3_0 *xb, short il, thread type4 & reg) {
+    // il=0..7, each loads 4 elements
+    // Group = il/2 (0..3), sub = il%2 (first 4 or second 4 within group)
+    const float d = xb->d / 127.0h;
+    const int group = il / 2;
+    const int sub   = il % 2;
+    device const uint8_t * in = xb->qs + group * 3;
+    const uint8_t b0 = in[0], b1 = in[1], b2 = in[2];
+    // Directly unpack only the needed 4 indices (avoid 8-element array + register spill)
+    if (sub == 0) {
+        reg[0] = tq3_values[ b0       & 7] * d;
+        reg[1] = tq3_values[(b0 >> 3) & 7] * d;
+        reg[2] = tq3_values[((b0 >> 6) & 3) | ((b1 & 1) << 2)] * d;
+        reg[3] = tq3_values[(b1 >> 1) & 7] * d;
+    } else {
+        reg[0] = tq3_values[(b1 >> 4) & 7] * d;
+        reg[1] = tq3_values[((b1 >> 7) & 1) | ((b2 & 3) << 1)] * d;
+        reg[2] = tq3_values[(b2 >> 2) & 7] * d;
+        reg[3] = tq3_values[(b2 >> 5) & 7] * d;
+    }
+}
+
+// TQ4_0: 4-bit indices (nibbles), 16 bytes for 32 elements
+// Layout: qs[j] low nibble = element j, high nibble = element j+16
+template <typename type4x4>
+void dequantize_tq4_0(device const block_tq4_0 *xb, short il, thread type4x4 & reg) {
+    // il=0: elements 0-15 (low nibbles of qs[0-15])
+    // il=1: elements 16-31 (high nibbles of qs[0-15])
+    device const uint8_t * qs = xb->qs;
+    const float d = xb->d / 127.0h;
+    const int shift = il * 4;
+    for (int i = 0; i < 16; i++) {
+        const uint8_t idx = (qs[i] >> shift) & 0x0F;
+        reg[i/4][i%4] = tq4_values[idx] * d;
+    }
+}
+
+template <typename type4>
+void dequantize_tq4_0_t4(device const block_tq4_0 *xb, short il, thread type4 & reg) {
+    // il=0..7: il/4 selects low(0) or high(1) nibble, il%4 selects byte group
+    device const uint8_t * qs = xb->qs;
+    const float d = xb->d / 127.0h;
+    const int shift = (il / 4) * 4;
+    const int byte_offset = (il % 4) * 4;
+    for (int i = 0; i < 4; i++) {
+        const uint8_t idx = (qs[byte_offset + i] >> shift) & 0x0F;
+        reg[i] = tq4_values[idx] * d;
+    }
+}
+
+// TQ2_1: Mixed-precision TQ3 (outlier, 32 elem) + TQ2 (normal, 96 elem) = 128 elem
+// type4x4: 16 elements per call, il=0..7, nl=8
+//   il=0,1: outlier TQ3 (groups 0-1, 2-3)
+//   il=2..7: normal TQ2 blocks 0-2 (2 loads per block)
+template <typename type4x4>
+void dequantize_tq2_1(device const block_tq2_1 *xb, short il, thread type4x4 & reg) {
+    if (il < 2) {
+        // Outlier region: TQ3 dequant, same as dequantize_tq3_0 with il=0 or 1
+        const float d = xb->d_out / 127.0h;
+        // Group 0
+        {
+            device const uint8_t * in = xb->qs_out + il*2 * 3;
+            const uint8_t b0 = in[0], b1 = in[1], b2 = in[2];
+            reg[0][0] = tq3_values[ b0       & 7] * d;
+            reg[0][1] = tq3_values[(b0 >> 3) & 7] * d;
+            reg[0][2] = tq3_values[((b0 >> 6) & 3) | ((b1 & 1) << 2)] * d;
+            reg[0][3] = tq3_values[(b1 >> 1) & 7] * d;
+            reg[1][0] = tq3_values[(b1 >> 4) & 7] * d;
+            reg[1][1] = tq3_values[((b1 >> 7) & 1) | ((b2 & 3) << 1)] * d;
+            reg[1][2] = tq3_values[(b2 >> 2) & 7] * d;
+            reg[1][3] = tq3_values[(b2 >> 5) & 7] * d;
+        }
+        // Group 1
+        {
+            device const uint8_t * in = xb->qs_out + (il*2 + 1) * 3;
+            const uint8_t b0 = in[0], b1 = in[1], b2 = in[2];
+            reg[2][0] = tq3_values[ b0       & 7] * d;
+            reg[2][1] = tq3_values[(b0 >> 3) & 7] * d;
+            reg[2][2] = tq3_values[((b0 >> 6) & 3) | ((b1 & 1) << 2)] * d;
+            reg[2][3] = tq3_values[(b1 >> 1) & 7] * d;
+            reg[3][0] = tq3_values[(b1 >> 4) & 7] * d;
+            reg[3][1] = tq3_values[((b1 >> 7) & 1) | ((b2 & 3) << 1)] * d;
+            reg[3][2] = tq3_values[(b2 >> 2) & 7] * d;
+            reg[3][3] = tq3_values[(b2 >> 5) & 7] * d;
+        }
+    } else {
+        // Normal region: TQ2 dequant
+        const int norm_il = il - 2;  // 0..5
+        const int blk = norm_il / 2; // which TQ2 sub-block (0,1,2)
+        const int sub = norm_il % 2; // 0=first 16 elem, 1=second 16
+
+        float d;
+        device const uint8_t * qs;
+        switch (blk) {
+            case 0: d = xb->d_n0 / 127.0h; qs = xb->qs_n0; break;
+            case 1: d = xb->d_n1 / 127.0h; qs = xb->qs_n1; break;
+            default: d = xb->d_n2 / 127.0h; qs = xb->qs_n2; break;
+        }
+        device const uint8_t * q = qs + 4 * sub;
+        for (int i = 0; i < 4; i++) {
+            const uint8_t byte = q[i];
+            reg[i][0] = tq2_values[ byte       & 3] * d;
+            reg[i][1] = tq2_values[(byte >> 2) & 3] * d;
+            reg[i][2] = tq2_values[(byte >> 4) & 3] * d;
+            reg[i][3] = tq2_values[(byte >> 6) & 3] * d;
+        }
+    }
+}
+
+// TQ2_1 t4: 4 elements per call, il=0..31, nl=32
+//   il=0..7: outlier TQ3 (8 groups of 4 from 32 elements)
+//   il=8..31: normal TQ2 (3 blocks × 8 loads of 4 elements)
+template <typename type4>
+void dequantize_tq2_1_t4(device const block_tq2_1 *xb, short il, thread type4 & reg) {
+    if (il < 8) {
+        // Outlier TQ3: 32 elements, 4 groups of 3 bytes, 2 sub-groups of 4 per group
+        const float d = xb->d_out / 127.0h;
+        const int group = il / 2;
+        const int sub   = il % 2;
+        device const uint8_t * in = xb->qs_out + group * 3;
+        const uint8_t b0 = in[0], b1 = in[1], b2 = in[2];
+        if (sub == 0) {
+            reg[0] = tq3_values[ b0       & 7] * d;
+            reg[1] = tq3_values[(b0 >> 3) & 7] * d;
+            reg[2] = tq3_values[((b0 >> 6) & 3) | ((b1 & 1) << 2)] * d;
+            reg[3] = tq3_values[(b1 >> 1) & 7] * d;
+        } else {
+            reg[0] = tq3_values[(b1 >> 4) & 7] * d;
+            reg[1] = tq3_values[((b1 >> 7) & 1) | ((b2 & 3) << 1)] * d;
+            reg[2] = tq3_values[(b2 >> 2) & 7] * d;
+            reg[3] = tq3_values[(b2 >> 5) & 7] * d;
+        }
+    } else {
+        // Normal TQ2: il=8..31, 3 blocks of 32 elements
+        const int norm_il = il - 8;   // 0..23
+        const int blk = norm_il / 8;  // which TQ2 sub-block (0,1,2)
+        const int sub = norm_il % 8;  // byte index within the 8-byte block
+
+        float d;
+        device const uint8_t * qs;
+        switch (blk) {
+            case 0: d = xb->d_n0 / 127.0h; qs = xb->qs_n0; break;
+            case 1: d = xb->d_n1 / 127.0h; qs = xb->qs_n1; break;
+            default: d = xb->d_n2 / 127.0h; qs = xb->qs_n2; break;
+        }
+        const uint8_t byte = qs[sub];
+        reg[0] = tq2_values[ byte       & 3] * d;
+        reg[1] = tq2_values[(byte >> 2) & 3] * d;
+        reg[2] = tq2_values[(byte >> 4) & 3] * d;
+        reg[3] = tq2_values[(byte >> 6) & 3] * d;
+    }
+}
+
 typedef struct {
     int32_t  ne01;
     int32_t  ne02;
@@ -3122,6 +3341,47 @@ template [[host_name("kernel_flash_attn_ext_q8_0_h256")]]        kernel flash_at
 template [[host_name("kernel_flash_attn_ext_q8_0_hk192_hv128")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_q8_0, 2, dequantize_q8_0, block_q8_0, 2, dequantize_q8_0, 192, 128>;
 template [[host_name("kernel_flash_attn_ext_q8_0_hk576_hv512")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_q8_0, 2, dequantize_q8_0, block_q8_0, 2, dequantize_q8_0, 576, 512>;
 
+// LeanKV TurboQuant flash attention templates (K and V same type, nl=2 for type4x4)
+template [[host_name("kernel_flash_attn_ext_tq2_0_h64" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 64,  64>;
+template [[host_name("kernel_flash_attn_ext_tq2_0_h80" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 80,  80>;
+template [[host_name("kernel_flash_attn_ext_tq2_0_h96" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 96,  96>;
+template [[host_name("kernel_flash_attn_ext_tq2_0_h112")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 112, 112>;
+template [[host_name("kernel_flash_attn_ext_tq2_0_h128")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 128, 128>;
+template [[host_name("kernel_flash_attn_ext_tq2_0_h192")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 192, 192>;
+template [[host_name("kernel_flash_attn_ext_tq2_0_h256")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 256, 256>;
+template [[host_name("kernel_flash_attn_ext_tq2_0_hk192_hv128")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 192, 128>;
+template [[host_name("kernel_flash_attn_ext_tq2_0_hk576_hv512")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_0, 2, dequantize_tq2_0, block_tq2_0, 2, dequantize_tq2_0, 576, 512>;
+
+template [[host_name("kernel_flash_attn_ext_tq2_1_h64" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 64,  64>;
+template [[host_name("kernel_flash_attn_ext_tq2_1_h80" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 80,  80>;
+template [[host_name("kernel_flash_attn_ext_tq2_1_h96" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 96,  96>;
+template [[host_name("kernel_flash_attn_ext_tq2_1_h112")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 112, 112>;
+template [[host_name("kernel_flash_attn_ext_tq2_1_h128")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 128, 128>;
+template [[host_name("kernel_flash_attn_ext_tq2_1_h192")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 192, 192>;
+template [[host_name("kernel_flash_attn_ext_tq2_1_h256")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 256, 256>;
+template [[host_name("kernel_flash_attn_ext_tq2_1_hk192_hv128")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 192, 128>;
+template [[host_name("kernel_flash_attn_ext_tq2_1_hk576_hv512")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq2_1, 8, dequantize_tq2_1, block_tq2_1, 8, dequantize_tq2_1, 576, 512>;
+
+template [[host_name("kernel_flash_attn_ext_tq3_0_h64" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 64,  64>;
+template [[host_name("kernel_flash_attn_ext_tq3_0_h80" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 80,  80>;
+template [[host_name("kernel_flash_attn_ext_tq3_0_h96" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 96,  96>;
+template [[host_name("kernel_flash_attn_ext_tq3_0_h112")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 112, 112>;
+template [[host_name("kernel_flash_attn_ext_tq3_0_h128")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 128, 128>;
+template [[host_name("kernel_flash_attn_ext_tq3_0_h192")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 192, 192>;
+template [[host_name("kernel_flash_attn_ext_tq3_0_h256")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 256, 256>;
+template [[host_name("kernel_flash_attn_ext_tq3_0_hk192_hv128")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 192, 128>;
+template [[host_name("kernel_flash_attn_ext_tq3_0_hk576_hv512")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq3_0, 2, dequantize_tq3_0, block_tq3_0, 2, dequantize_tq3_0, 576, 512>;
+
+template [[host_name("kernel_flash_attn_ext_tq4_0_h64" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 64,  64>;
+template [[host_name("kernel_flash_attn_ext_tq4_0_h80" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 80,  80>;
+template [[host_name("kernel_flash_attn_ext_tq4_0_h96" )]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 96,  96>;
+template [[host_name("kernel_flash_attn_ext_tq4_0_h112")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 112, 112>;
+template [[host_name("kernel_flash_attn_ext_tq4_0_h128")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 128, 128>;
+template [[host_name("kernel_flash_attn_ext_tq4_0_h192")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 192, 192>;
+template [[host_name("kernel_flash_attn_ext_tq4_0_h256")]]        kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 256, 256>;
+template [[host_name("kernel_flash_attn_ext_tq4_0_hk192_hv128")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 192, 128>;
+template [[host_name("kernel_flash_attn_ext_tq4_0_hk576_hv512")]] kernel flash_attn_ext_t kernel_flash_attn_ext<FA_TYPES, block_tq4_0, 2, dequantize_tq4_0, block_tq4_0, 2, dequantize_tq4_0, 576, 512>;
+
 #undef FA_TYPES
 
 template<
@@ -3502,6 +3762,43 @@ template [[host_name("kernel_flash_attn_ext_vec_q8_0_hk192_hv128")]] kernel flas
 template [[host_name("kernel_flash_attn_ext_vec_f16_hk576_hv512")]]  kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, half4,      1, dequantize_f16_t4,  half4,       1, dequantize_f16_t4,  576, 512, 4>;
 template [[host_name("kernel_flash_attn_ext_vec_q8_0_hk576_hv512")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_q8_0, 8, dequantize_q8_0_t4, block_q8_0,  8, dequantize_q8_0_t4, 576, 512, 4>;
 
+// LeanKV TurboQuant flash attention vec templates (nl=8 for t4 = 32 elements / 4 per load)
+template [[host_name("kernel_flash_attn_ext_vec_tq2_0_h64")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_0, 8, dequantize_tq2_0_t4, block_tq2_0, 8, dequantize_tq2_0_t4, 64,  64,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_0_h80")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_0, 8, dequantize_tq2_0_t4, block_tq2_0, 8, dequantize_tq2_0_t4, 80,  80,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_0_h96")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_0, 8, dequantize_tq2_0_t4, block_tq2_0, 8, dequantize_tq2_0_t4, 96,  96,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_0_h112")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_0, 8, dequantize_tq2_0_t4, block_tq2_0, 8, dequantize_tq2_0_t4, 112, 112, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_0_h128")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_0, 8, dequantize_tq2_0_t4, block_tq2_0, 8, dequantize_tq2_0_t4, 128, 128, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_0_h256")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_0, 8, dequantize_tq2_0_t4, block_tq2_0, 8, dequantize_tq2_0_t4, 256, 256, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_0_hk192_hv128")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_0, 8, dequantize_tq2_0_t4, block_tq2_0, 8, dequantize_tq2_0_t4, 192, 128, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_0_hk576_hv512")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_0, 8, dequantize_tq2_0_t4, block_tq2_0, 8, dequantize_tq2_0_t4, 576, 512, 4>;
+
+template [[host_name("kernel_flash_attn_ext_vec_tq2_1_h64")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_1, 32, dequantize_tq2_1_t4, block_tq2_1, 32, dequantize_tq2_1_t4, 64,  64,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_1_h80")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_1, 32, dequantize_tq2_1_t4, block_tq2_1, 32, dequantize_tq2_1_t4, 80,  80,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_1_h96")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_1, 32, dequantize_tq2_1_t4, block_tq2_1, 32, dequantize_tq2_1_t4, 96,  96,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_1_h112")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_1, 32, dequantize_tq2_1_t4, block_tq2_1, 32, dequantize_tq2_1_t4, 112, 112, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_1_h128")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_1, 32, dequantize_tq2_1_t4, block_tq2_1, 32, dequantize_tq2_1_t4, 128, 128, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_1_h256")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_1, 32, dequantize_tq2_1_t4, block_tq2_1, 32, dequantize_tq2_1_t4, 256, 256, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_1_hk192_hv128")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_1, 32, dequantize_tq2_1_t4, block_tq2_1, 32, dequantize_tq2_1_t4, 192, 128, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq2_1_hk576_hv512")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq2_1, 32, dequantize_tq2_1_t4, block_tq2_1, 32, dequantize_tq2_1_t4, 576, 512, 4>;
+
+template [[host_name("kernel_flash_attn_ext_vec_tq3_0_h64")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq3_0, 8, dequantize_tq3_0_t4, block_tq3_0, 8, dequantize_tq3_0_t4, 64,  64,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq3_0_h80")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq3_0, 8, dequantize_tq3_0_t4, block_tq3_0, 8, dequantize_tq3_0_t4, 80,  80,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq3_0_h96")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq3_0, 8, dequantize_tq3_0_t4, block_tq3_0, 8, dequantize_tq3_0_t4, 96,  96,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq3_0_h112")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq3_0, 8, dequantize_tq3_0_t4, block_tq3_0, 8, dequantize_tq3_0_t4, 112, 112, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq3_0_h128")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq3_0, 8, dequantize_tq3_0_t4, block_tq3_0, 8, dequantize_tq3_0_t4, 128, 128, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq3_0_h256")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq3_0, 8, dequantize_tq3_0_t4, block_tq3_0, 8, dequantize_tq3_0_t4, 256, 256, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq3_0_hk192_hv128")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq3_0, 8, dequantize_tq3_0_t4, block_tq3_0, 8, dequantize_tq3_0_t4, 192, 128, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq3_0_hk576_hv512")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq3_0, 8, dequantize_tq3_0_t4, block_tq3_0, 8, dequantize_tq3_0_t4, 576, 512, 4>;
+
+template [[host_name("kernel_flash_attn_ext_vec_tq4_0_h64")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq4_0, 8, dequantize_tq4_0_t4, block_tq4_0, 8, dequantize_tq4_0_t4, 64,  64,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq4_0_h80")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq4_0, 8, dequantize_tq4_0_t4, block_tq4_0, 8, dequantize_tq4_0_t4, 80,  80,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq4_0_h96")]]         kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq4_0, 8, dequantize_tq4_0_t4, block_tq4_0, 8, dequantize_tq4_0_t4, 96,  96,  4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq4_0_h112")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq4_0, 8, dequantize_tq4_0_t4, block_tq4_0, 8, dequantize_tq4_0_t4, 112, 112, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq4_0_h128")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq4_0, 8, dequantize_tq4_0_t4, block_tq4_0, 8, dequantize_tq4_0_t4, 128, 128, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq4_0_h256")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq4_0, 8, dequantize_tq4_0_t4, block_tq4_0, 8, dequantize_tq4_0_t4, 256, 256, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq4_0_hk192_hv128")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq4_0, 8, dequantize_tq4_0_t4, block_tq4_0, 8, dequantize_tq4_0_t4, 192, 128, 4>;
+template [[host_name("kernel_flash_attn_ext_vec_tq4_0_hk576_hv512")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_tq4_0, 8, dequantize_tq4_0_t4, block_tq4_0, 8, dequantize_tq4_0_t4, 576, 512, 4>;
+
 #undef FA_TYPES
 
 template<typename T0, typename T1>
@@ -3674,6 +3971,411 @@ kernel void kernel_cpy_f32_q4_0(
 
             dst_data[i00/QK4_0].qs[j]  = xi0;
             dst_data[i00/QK4_0].qs[j] |= xi1 << 4;
+        }
+    }
+}
+
+// LeanKV TurboQuant copy/quantize kernels (f32 → tq*_0)
+// Used for writing to KV cache on GPU
+
+// TQ4_0 boundary table for nearest-level quantization (binary search)
+constant float tq4_boundaries[15] = {
+    -0.8786519f, -0.6748221f, -0.5261490f, -0.4025170f,
+    -0.2928009f, -0.1913257f, -0.0945769f,  0.0000000f,
+     0.0945769f,  0.1913257f,  0.2928009f,  0.4025170f,
+     0.5261490f,  0.6748221f,  0.8786519f,
+};
+
+// TQ3_0 boundary table
+constant float tq3_boundaries[7] = {
+    -0.8122602f, -0.4879221f, -0.2326114f, 0.0000000f,
+     0.2326114f,  0.4879221f,  0.8122602f,
+};
+
+// TQ2_0 boundary table
+constant float tq2_boundaries[3] = {
+    -0.6498857f, 0.0000000f, 0.6498857f,
+};
+
+// Binary search nearest-level for TQ4 (4 comparisons instead of 15)
+inline uint8_t find_nearest_tq4_metal(float xn) {
+    uint8_t idx;
+    if (xn <= tq4_boundaries[7]) {
+        if (xn <= tq4_boundaries[3]) {
+            if (xn <= tq4_boundaries[1]) {
+                idx = (xn <= tq4_boundaries[0]) ? 0 : 1;
+            } else {
+                idx = (xn <= tq4_boundaries[2]) ? 2 : 3;
+            }
+        } else {
+            if (xn <= tq4_boundaries[5]) {
+                idx = (xn <= tq4_boundaries[4]) ? 4 : 5;
+            } else {
+                idx = (xn <= tq4_boundaries[6]) ? 6 : 7;
+            }
+        }
+    } else {
+        if (xn <= tq4_boundaries[11]) {
+            if (xn <= tq4_boundaries[9]) {
+                idx = (xn <= tq4_boundaries[8]) ? 8 : 9;
+            } else {
+                idx = (xn <= tq4_boundaries[10]) ? 10 : 11;
+            }
+        } else {
+            if (xn <= tq4_boundaries[13]) {
+                idx = (xn <= tq4_boundaries[12]) ? 12 : 13;
+            } else {
+                idx = (xn <= tq4_boundaries[14]) ? 14 : 15;
+            }
+        }
+    }
+    return idx;
+}
+
+inline uint8_t find_nearest_tq3_metal(float xn) {
+    uint8_t idx;
+    if (xn <= tq3_boundaries[3]) {
+        if (xn <= tq3_boundaries[1]) {
+            idx = (xn <= tq3_boundaries[0]) ? 0 : 1;
+        } else {
+            idx = (xn <= tq3_boundaries[2]) ? 2 : 3;
+        }
+    } else {
+        if (xn <= tq3_boundaries[5]) {
+            idx = (xn <= tq3_boundaries[4]) ? 4 : 5;
+        } else {
+            idx = (xn <= tq3_boundaries[6]) ? 6 : 7;
+        }
+    }
+    return idx;
+}
+
+inline uint8_t find_nearest_tq2_metal(float xn) {
+    uint8_t idx = 0;
+    if (xn > tq2_boundaries[0]) idx = 1;
+    if (xn > tq2_boundaries[1]) idx = 2;
+    if (xn > tq2_boundaries[2]) idx = 3;
+    return idx;
+}
+
+kernel void kernel_cpy_f32_tq4_0(
+        device const float * src0,
+        device        void * dst,
+        constant   int64_t & ne00,
+        constant   int64_t & ne01,
+        constant   int64_t & ne02,
+        constant   int64_t & ne03,
+        constant  uint64_t & nb00,
+        constant  uint64_t & nb01,
+        constant  uint64_t & nb02,
+        constant  uint64_t & nb03,
+        constant   int64_t & ne0,
+        constant   int64_t & ne1,
+        constant   int64_t & ne2,
+        constant   int64_t & ne3,
+        constant  uint64_t & nb0,
+        constant  uint64_t & nb1,
+        constant  uint64_t & nb2,
+        constant  uint64_t & nb3,
+        uint3 tgpig[[threadgroup_position_in_grid]],
+        uint3 tpitg[[thread_position_in_threadgroup]],
+        uint3   ntg[[threads_per_threadgroup]]) {
+    const int64_t i03 = tgpig[2];
+    const int64_t i02 = tgpig[1];
+    const int64_t i01 = tgpig[0];
+
+    const int64_t n = i03*ne02*ne01*ne00 + i02*ne01*ne00 + i01*ne00;
+
+    const int64_t i3 = n / (ne2*ne1*ne0);
+    const int64_t i2 = (n - i3*ne2*ne1*ne0) / (ne1*ne0);
+    const int64_t i1 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0) / ne0;
+    const int64_t i0 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0 - i1*ne0)/QK_TQ4;
+
+    device block_tq4_0 * dst_data = (device block_tq4_0 *) ((device char *) dst + i3*nb3 + i2*nb2 + i1*nb1 + i0*nb0);
+
+    for (int64_t i00 = tpitg.x*QK_TQ4; i00 < ne00; i00 += ntg.x*QK_TQ4) {
+        device const float * src = (device float *)((device char *) src0 + i03*nb03 + i02*nb02 + i01*nb01 + i00*nb00);
+
+        float amax = 0.0f;
+        for (int j = 0; j < QK_TQ4; j++) {
+            amax = MAX(amax, fabs(src[j]));
+        }
+
+        const float d = amax;
+        const float id = d > 0.0f ? 1.0f/d : 0.0f;
+        dst_data[i00/QK_TQ4].d = d;
+
+        for (int j = 0; j < QK_TQ4/2; ++j) {
+            float xn0 = clamp(src[j]              * id, -1.0f, 1.0f);
+            float xn1 = clamp(src[j + QK_TQ4 / 2] * id, -1.0f, 1.0f);
+            uint8_t i0 = find_nearest_tq4_metal(xn0);
+            uint8_t i1 = find_nearest_tq4_metal(xn1);
+            dst_data[i00/QK_TQ4].qs[j] = i0 | (i1 << 4);
+        }
+    }
+}
+
+kernel void kernel_cpy_f32_tq3_0(
+        device const float * src0,
+        device        void * dst,
+        constant   int64_t & ne00,
+        constant   int64_t & ne01,
+        constant   int64_t & ne02,
+        constant   int64_t & ne03,
+        constant  uint64_t & nb00,
+        constant  uint64_t & nb01,
+        constant  uint64_t & nb02,
+        constant  uint64_t & nb03,
+        constant   int64_t & ne0,
+        constant   int64_t & ne1,
+        constant   int64_t & ne2,
+        constant   int64_t & ne3,
+        constant  uint64_t & nb0,
+        constant  uint64_t & nb1,
+        constant  uint64_t & nb2,
+        constant  uint64_t & nb3,
+        uint3 tgpig[[threadgroup_position_in_grid]],
+        uint3 tpitg[[thread_position_in_threadgroup]],
+        uint3   ntg[[threads_per_threadgroup]]) {
+    const int64_t i03 = tgpig[2];
+    const int64_t i02 = tgpig[1];
+    const int64_t i01 = tgpig[0];
+
+    const int64_t n = i03*ne02*ne01*ne00 + i02*ne01*ne00 + i01*ne00;
+
+    const int64_t i3 = n / (ne2*ne1*ne0);
+    const int64_t i2 = (n - i3*ne2*ne1*ne0) / (ne1*ne0);
+    const int64_t i1 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0) / ne0;
+    const int64_t i0 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0 - i1*ne0)/QK_TQ3;
+
+    device block_tq3_0 * dst_data = (device block_tq3_0 *) ((device char *) dst + i3*nb3 + i2*nb2 + i1*nb1 + i0*nb0);
+
+    for (int64_t i00 = tpitg.x*QK_TQ3; i00 < ne00; i00 += ntg.x*QK_TQ3) {
+        device const float * src = (device float *)((device char *) src0 + i03*nb03 + i02*nb02 + i01*nb01 + i00*nb00);
+
+        float amax = 0.0f;
+        for (int j = 0; j < QK_TQ3; j++) {
+            amax = MAX(amax, fabs(src[j]));
+        }
+
+        const float d = amax;
+        const float id = d > 0.0f ? 1.0f/d : 0.0f;
+        dst_data[i00/QK_TQ3].d = d;
+
+        // Quantize to 3-bit indices
+        uint8_t indices[QK_TQ3];
+        for (int j = 0; j < QK_TQ3; j++) {
+            float xn = clamp(src[j] * id, -1.0f, 1.0f);
+            indices[j] = find_nearest_tq3_metal(xn);
+        }
+
+        // Pack 32 × 3-bit indices into 12 bytes (4 groups of 8)
+        for (int g = 0; g < 4; g++) {
+            thread const uint8_t *idx = indices + g * 8;
+            device uint8_t *out = dst_data[i00/QK_TQ3].qs + g * 3;
+            out[0] = (idx[0] & 7) | ((idx[1] & 7) << 3) | ((idx[2] & 3) << 6);
+            out[1] = ((idx[2] >> 2) & 1) | ((idx[3] & 7) << 1) | ((idx[4] & 7) << 4) | ((idx[5] & 1) << 7);
+            out[2] = ((idx[5] >> 1) & 3) | ((idx[6] & 7) << 2) | ((idx[7] & 7) << 5);
+        }
+    }
+}
+
+kernel void kernel_cpy_f32_tq2_0(
+        device const float * src0,
+        device        void * dst,
+        constant   int64_t & ne00,
+        constant   int64_t & ne01,
+        constant   int64_t & ne02,
+        constant   int64_t & ne03,
+        constant  uint64_t & nb00,
+        constant  uint64_t & nb01,
+        constant  uint64_t & nb02,
+        constant  uint64_t & nb03,
+        constant   int64_t & ne0,
+        constant   int64_t & ne1,
+        constant   int64_t & ne2,
+        constant   int64_t & ne3,
+        constant  uint64_t & nb0,
+        constant  uint64_t & nb1,
+        constant  uint64_t & nb2,
+        constant  uint64_t & nb3,
+        uint3 tgpig[[threadgroup_position_in_grid]],
+        uint3 tpitg[[thread_position_in_threadgroup]],
+        uint3   ntg[[threads_per_threadgroup]]) {
+    const int64_t i03 = tgpig[2];
+    const int64_t i02 = tgpig[1];
+    const int64_t i01 = tgpig[0];
+
+    const int64_t n = i03*ne02*ne01*ne00 + i02*ne01*ne00 + i01*ne00;
+
+    const int64_t i3 = n / (ne2*ne1*ne0);
+    const int64_t i2 = (n - i3*ne2*ne1*ne0) / (ne1*ne0);
+    const int64_t i1 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0) / ne0;
+    const int64_t i0 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0 - i1*ne0)/QK_TQ2;
+
+    device block_tq2_0 * dst_data = (device block_tq2_0 *) ((device char *) dst + i3*nb3 + i2*nb2 + i1*nb1 + i0*nb0);
+
+    for (int64_t i00 = tpitg.x*QK_TQ2; i00 < ne00; i00 += ntg.x*QK_TQ2) {
+        device const float * src = (device float *)((device char *) src0 + i03*nb03 + i02*nb02 + i01*nb01 + i00*nb00);
+
+        float amax = 0.0f;
+        for (int j = 0; j < QK_TQ2; j++) {
+            amax = MAX(amax, fabs(src[j]));
+        }
+
+        const float d = amax;
+        const float id = d > 0.0f ? 1.0f/d : 0.0f;
+        dst_data[i00/QK_TQ2].d = d;
+
+        // Quantize and pack: 4 × 2-bit indices per byte, 8 bytes total
+        for (int j = 0; j < QK_TQ2/4; j++) {
+            float xn0 = clamp(src[j*4+0] * id, -1.0f, 1.0f);
+            float xn1 = clamp(src[j*4+1] * id, -1.0f, 1.0f);
+            float xn2 = clamp(src[j*4+2] * id, -1.0f, 1.0f);
+            float xn3 = clamp(src[j*4+3] * id, -1.0f, 1.0f);
+            dst_data[i00/QK_TQ2].qs[j] =
+                (find_nearest_tq2_metal(xn0))      |
+                (find_nearest_tq2_metal(xn1) << 2)  |
+                (find_nearest_tq2_metal(xn2) << 4)  |
+                (find_nearest_tq2_metal(xn3) << 6);
+        }
+    }
+}
+
+kernel void kernel_cpy_f32_tq2_1(
+        device const float * src0,
+        device        void * dst,
+        constant   int64_t & ne00,
+        constant   int64_t & ne01,
+        constant   int64_t & ne02,
+        constant   int64_t & ne03,
+        constant  uint64_t & nb00,
+        constant  uint64_t & nb01,
+        constant  uint64_t & nb02,
+        constant  uint64_t & nb03,
+        constant   int64_t & ne0,
+        constant   int64_t & ne1,
+        constant   int64_t & ne2,
+        constant   int64_t & ne3,
+        constant  uint64_t & nb0,
+        constant  uint64_t & nb1,
+        constant  uint64_t & nb2,
+        constant  uint64_t & nb3,
+        uint3 tgpig[[threadgroup_position_in_grid]],
+        uint3 tpitg[[thread_position_in_threadgroup]],
+        uint3   ntg[[threads_per_threadgroup]]) {
+    const int64_t i03 = tgpig[2];
+    const int64_t i02 = tgpig[1];
+    const int64_t i01 = tgpig[0];
+
+    const int64_t n = i03*ne02*ne01*ne00 + i02*ne01*ne00 + i01*ne00;
+
+    const int64_t i3 = n / (ne2*ne1*ne0);
+    const int64_t i2 = (n - i3*ne2*ne1*ne0) / (ne1*ne0);
+    const int64_t i1 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0) / ne0;
+    const int64_t i0 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0 - i1*ne0)/QK_TQ2_1;
+
+    device block_tq2_1 * dst_data = (device block_tq2_1 *) ((device char *) dst + i3*nb3 + i2*nb2 + i1*nb1 + i0*nb0);
+
+    for (int64_t i00 = tpitg.x*QK_TQ2_1; i00 < ne00; i00 += ntg.x*QK_TQ2_1) {
+        device const float * src = (device float *)((device char *) src0 + i03*nb03 + i02*nb02 + i01*nb01 + i00*nb00);
+
+        // === Outlier region: elements 0-31, quantize as TQ3 ===
+        {
+            float amax = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                amax = MAX(amax, fabs(src[j]));
+            }
+
+            const float d = amax;
+            const float id = d > 0.0f ? 1.0f/d : 0.0f;
+            dst_data[i00/QK_TQ2_1].d_out = d;
+
+            // Quantize to 3-bit indices
+            uint8_t indices[32];
+            for (int j = 0; j < 32; j++) {
+                float xn = clamp(src[j] * id, -1.0f, 1.0f);
+                indices[j] = find_nearest_tq3_metal(xn);
+            }
+
+            // Pack 32 x 3-bit indices into 12 bytes (4 groups of 8)
+            for (int g = 0; g < 4; g++) {
+                thread const uint8_t *idx = indices + g * 8;
+                device uint8_t *out = dst_data[i00/QK_TQ2_1].qs_out + g * 3;
+                out[0] = (idx[0] & 7) | ((idx[1] & 7) << 3) | ((idx[2] & 3) << 6);
+                out[1] = ((idx[2] >> 2) & 1) | ((idx[3] & 7) << 1) | ((idx[4] & 7) << 4) | ((idx[5] & 1) << 7);
+                out[2] = ((idx[5] >> 1) & 3) | ((idx[6] & 7) << 2) | ((idx[7] & 7) << 5);
+            }
+        }
+
+        // === Normal region: elements 32-127, quantize as 3 x TQ2 blocks ===
+        // Block 0: elements 32-63
+        {
+            float amax = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                amax = MAX(amax, fabs(src[32 + j]));
+            }
+            const float d = amax;
+            const float id = d > 0.0f ? 1.0f/d : 0.0f;
+            dst_data[i00/QK_TQ2_1].d_n0 = d;
+
+            for (int j = 0; j < 8; j++) {
+                float xn0 = clamp(src[32 + j*4+0] * id, -1.0f, 1.0f);
+                float xn1 = clamp(src[32 + j*4+1] * id, -1.0f, 1.0f);
+                float xn2 = clamp(src[32 + j*4+2] * id, -1.0f, 1.0f);
+                float xn3 = clamp(src[32 + j*4+3] * id, -1.0f, 1.0f);
+                dst_data[i00/QK_TQ2_1].qs_n0[j] =
+                    (find_nearest_tq2_metal(xn0))      |
+                    (find_nearest_tq2_metal(xn1) << 2)  |
+                    (find_nearest_tq2_metal(xn2) << 4)  |
+                    (find_nearest_tq2_metal(xn3) << 6);
+            }
+        }
+
+        // Block 1: elements 64-95
+        {
+            float amax = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                amax = MAX(amax, fabs(src[64 + j]));
+            }
+            const float d = amax;
+            const float id = d > 0.0f ? 1.0f/d : 0.0f;
+            dst_data[i00/QK_TQ2_1].d_n1 = d;
+
+            for (int j = 0; j < 8; j++) {
+                float xn0 = clamp(src[64 + j*4+0] * id, -1.0f, 1.0f);
+                float xn1 = clamp(src[64 + j*4+1] * id, -1.0f, 1.0f);
+                float xn2 = clamp(src[64 + j*4+2] * id, -1.0f, 1.0f);
+                float xn3 = clamp(src[64 + j*4+3] * id, -1.0f, 1.0f);
+                dst_data[i00/QK_TQ2_1].qs_n1[j] =
+                    (find_nearest_tq2_metal(xn0))      |
+                    (find_nearest_tq2_metal(xn1) << 2)  |
+                    (find_nearest_tq2_metal(xn2) << 4)  |
+                    (find_nearest_tq2_metal(xn3) << 6);
+            }
+        }
+
+        // Block 2: elements 96-127
+        {
+            float amax = 0.0f;
+            for (int j = 0; j < 32; j++) {
+                amax = MAX(amax, fabs(src[96 + j]));
+            }
+            const float d = amax;
+            const float id = d > 0.0f ? 1.0f/d : 0.0f;
+            dst_data[i00/QK_TQ2_1].d_n2 = d;
+
+            for (int j = 0; j < 8; j++) {
+                float xn0 = clamp(src[96 + j*4+0] * id, -1.0f, 1.0f);
+                float xn1 = clamp(src[96 + j*4+1] * id, -1.0f, 1.0f);
+                float xn2 = clamp(src[96 + j*4+2] * id, -1.0f, 1.0f);
+                float xn3 = clamp(src[96 + j*4+3] * id, -1.0f, 1.0f);
+                dst_data[i00/QK_TQ2_1].qs_n2[j] =
+                    (find_nearest_tq2_metal(xn0))      |
+                    (find_nearest_tq2_metal(xn1) << 2)  |
+                    (find_nearest_tq2_metal(xn2) << 4)  |
+                    (find_nearest_tq2_metal(xn3) << 6);
+            }
         }
     }
 }
@@ -9897,6 +10599,10 @@ template [[host_name("kernel_get_rows_q5_0")]]    kernel get_rows_q_t kernel_get
 template [[host_name("kernel_get_rows_q5_1")]]    kernel get_rows_q_t kernel_get_rows_q<block_q5_1,    2, dequantize_q5_1>;
 template [[host_name("kernel_get_rows_q6_0")]]    kernel get_rows_q_t kernel_get_rows_q<block_q6_0,    2, dequantize_q6_0>;
 template [[host_name("kernel_get_rows_q8_0")]]    kernel get_rows_q_t kernel_get_rows_q<block_q8_0,    2, dequantize_q8_0>;
+template [[host_name("kernel_get_rows_tq2_0")]]   kernel get_rows_q_t kernel_get_rows_q<block_tq2_0,   2, dequantize_tq2_0>;
+template [[host_name("kernel_get_rows_tq2_1")]]   kernel get_rows_q_t kernel_get_rows_q<block_tq2_1,   8, dequantize_tq2_1>;
+template [[host_name("kernel_get_rows_tq3_0")]]   kernel get_rows_q_t kernel_get_rows_q<block_tq3_0,   2, dequantize_tq3_0>;
+template [[host_name("kernel_get_rows_tq4_0")]]   kernel get_rows_q_t kernel_get_rows_q<block_tq4_0,   2, dequantize_tq4_0>;
 template [[host_name("kernel_get_rows_q2_K")]]    kernel get_rows_q_t kernel_get_rows_q<block_q2_K,    QK_NL, dequantize_q2_K>;
 template [[host_name("kernel_get_rows_q3_K")]]    kernel get_rows_q_t kernel_get_rows_q<block_q3_K,    QK_NL, dequantize_q3_K>;
 template [[host_name("kernel_get_rows_q4_K")]]    kernel get_rows_q_t kernel_get_rows_q<block_q4_K,    QK_NL, dequantize_q4_K>;
@@ -9947,6 +10653,10 @@ template [[host_name("kernel_mul_mm_q5_0_f32")]]    kernel mat_mm_t kernel_mul_m
 template [[host_name("kernel_mul_mm_q5_1_f32")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q5_1,    2,     dequantize_q5_1>, float>;
 template [[host_name("kernel_mul_mm_q6_0_f32")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q6_0,    2,     dequantize_q6_0>, float>;
 template [[host_name("kernel_mul_mm_q8_0_f32")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q8_0,    2,     dequantize_q8_0>, float>;
+template [[host_name("kernel_mul_mm_tq2_0_f32")]]   kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_tq2_0,   2,     dequantize_tq2_0>, float>;
+template [[host_name("kernel_mul_mm_tq2_1_f32")]]   kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_tq2_1,   8,     dequantize_tq2_1>, float>;
+template [[host_name("kernel_mul_mm_tq3_0_f32")]]   kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_tq3_0,   2,     dequantize_tq3_0>, float>;
+template [[host_name("kernel_mul_mm_tq4_0_f32")]]   kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_tq4_0,   2,     dequantize_tq4_0>, float>;
 template [[host_name("kernel_mul_mm_q2_K_f32")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q2_K,    QK_NL, dequantize_q2_K>, float>;
 template [[host_name("kernel_mul_mm_q3_K_f32")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q3_K,    QK_NL, dequantize_q3_K>, float>;
 template [[host_name("kernel_mul_mm_q4_K_f32")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q4_K,    QK_NL, dequantize_q4_K>, float>;
@@ -9988,6 +10698,10 @@ template [[host_name("kernel_mul_mm_q5_0_f16")]]    kernel mat_mm_t kernel_mul_m
 template [[host_name("kernel_mul_mm_q5_1_f16")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q5_1,    2,     dequantize_q5_1>, half>;
 template [[host_name("kernel_mul_mm_q6_0_f16")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q6_0,    2,     dequantize_q6_0>, half>;
 template [[host_name("kernel_mul_mm_q8_0_f16")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q8_0,    2,     dequantize_q8_0>, half>;
+template [[host_name("kernel_mul_mm_tq2_0_f16")]]   kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_tq2_0,   2,     dequantize_tq2_0>, half>;
+template [[host_name("kernel_mul_mm_tq2_1_f16")]]   kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_tq2_1,   8,     dequantize_tq2_1>, half>;
+template [[host_name("kernel_mul_mm_tq3_0_f16")]]   kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_tq3_0,   2,     dequantize_tq3_0>, half>;
+template [[host_name("kernel_mul_mm_tq4_0_f16")]]   kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_tq4_0,   2,     dequantize_tq4_0>, half>;
 template [[host_name("kernel_mul_mm_q2_K_f16")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q2_K,    QK_NL, dequantize_q2_K>, half>;
 template [[host_name("kernel_mul_mm_q3_K_f16")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q3_K,    QK_NL, dequantize_q3_K>, half>;
 template [[host_name("kernel_mul_mm_q4_K_f16")]]    kernel mat_mm_t kernel_mul_mm<half, simdgroup_half8x8, DD<block_q4_K,    QK_NL, dequantize_q4_K>, half>;
@@ -10036,6 +10750,10 @@ template [[host_name("kernel_mul_mm_id_q5_0_f32")]]    kernel mat_mm_id_t kernel
 template [[host_name("kernel_mul_mm_id_q5_1_f32")]]    kernel mat_mm_id_t kernel_mul_mm_id<DD<block_q5_1,    2,     dequantize_q5_1>>;
 template [[host_name("kernel_mul_mm_id_q6_0_f32")]]    kernel mat_mm_id_t kernel_mul_mm_id<DD<block_q6_0,    2,     dequantize_q6_0>>;
 template [[host_name("kernel_mul_mm_id_q8_0_f32")]]    kernel mat_mm_id_t kernel_mul_mm_id<DD<block_q8_0,    2,     dequantize_q8_0>>;
+template [[host_name("kernel_mul_mm_id_tq2_0_f32")]]   kernel mat_mm_id_t kernel_mul_mm_id<DD<block_tq2_0,   2,     dequantize_tq2_0>>;
+template [[host_name("kernel_mul_mm_id_tq2_1_f32")]]   kernel mat_mm_id_t kernel_mul_mm_id<DD<block_tq2_1,   8,     dequantize_tq2_1>>;
+template [[host_name("kernel_mul_mm_id_tq3_0_f32")]]   kernel mat_mm_id_t kernel_mul_mm_id<DD<block_tq3_0,   2,     dequantize_tq3_0>>;
+template [[host_name("kernel_mul_mm_id_tq4_0_f32")]]   kernel mat_mm_id_t kernel_mul_mm_id<DD<block_tq4_0,   2,     dequantize_tq4_0>>;
 template [[host_name("kernel_mul_mm_id_q2_K_f32")]]    kernel mat_mm_id_t kernel_mul_mm_id<DD<block_q2_K,    QK_NL, dequantize_q2_K>>;
 template [[host_name("kernel_mul_mm_id_q3_K_f32")]]    kernel mat_mm_id_t kernel_mul_mm_id<DD<block_q3_K,    QK_NL, dequantize_q3_K>>;
 template [[host_name("kernel_mul_mm_id_q4_K_f32")]]    kernel mat_mm_id_t kernel_mul_mm_id<DD<block_q4_K,    QK_NL, dequantize_q4_K>>;

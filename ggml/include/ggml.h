@@ -426,6 +426,7 @@ extern "C" {
         GGML_TYPE_TQ3_0     = 42,  // LeanKV: TurboQuant 3-bit Lloyd-Max (3.5 bits/elem)
         GGML_TYPE_TQ4_0     = 43,  // LeanKV: TurboQuant 4-bit Lloyd-Max (4.5 bits/elem)
         GGML_TYPE_TQ2_0     = 44,  // LeanKV: TurboQuant 2-bit Lloyd-Max (2.5 bits/elem)
+        GGML_TYPE_TQ2_1     = 45,  // LeanKV: TurboQuant mixed TQ3+TQ2 outlier (2.75 bits/elem, head_dim=128)
         //
         GGML_TYPE_Q8_0_X4 = 97,
         GGML_TYPE_Q8_1_X4 = 98,

@@ -3387,6 +3387,9 @@ static ggml_type kv_cache_type_from_str(const std::string & s) {
     if (s == "tq2_0") {
         return GGML_TYPE_TQ2_0;
     }
+    if (s == "tq2_1") {
+        return GGML_TYPE_TQ2_1;
+    }
     if (s == "tq3_0") {
         return GGML_TYPE_TQ3_0;
     }
@@ -3541,11 +3544,27 @@ struct llama_context_params common_context_params_to_llama(const gpt_params & pa
 
     // LeanKV: auto-enable Hadamard rotation for TurboQuant types
     // TQ3/TQ4 use Lloyd-Max codebooks optimized for post-Hadamard Gaussian distribution
-    if (cparams.type_k == GGML_TYPE_TQ2_0 || cparams.type_k == GGML_TYPE_TQ3_0 || cparams.type_k == GGML_TYPE_TQ4_0) {
-        cparams.k_cache_hadamard = true;
+    // Can be overridden with LLAMA_ARG_NO_AUTO_HADAMARD=1 for diagnostic testing
+    const char * no_auto_had = getenv("LLAMA_ARG_NO_AUTO_HADAMARD");
+    if (no_auto_had == NULL || no_auto_had[0] != '1') {
+        if (cparams.type_k == GGML_TYPE_TQ2_0 || cparams.type_k == GGML_TYPE_TQ3_0 || cparams.type_k == GGML_TYPE_TQ4_0 || cparams.type_k == GGML_TYPE_TQ2_1) {
+            cparams.k_cache_hadamard = true;
+        }
+        if (cparams.type_v == GGML_TYPE_TQ2_0 || cparams.type_v == GGML_TYPE_TQ3_0 || cparams.type_v == GGML_TYPE_TQ4_0 || cparams.type_v == GGML_TYPE_TQ2_1) {
+            cparams.v_cache_hadamard = true;
+        }
+    } else {
+        LLAMA_LOG_WARN("%s: auto-Hadamard disabled by LLAMA_ARG_NO_AUTO_HADAMARD=1\n", __func__);
     }
-    if (cparams.type_v == GGML_TYPE_TQ2_0 || cparams.type_v == GGML_TYPE_TQ3_0 || cparams.type_v == GGML_TYPE_TQ4_0) {
-        cparams.v_cache_hadamard = true;
+
+    // LeanKV: outlier channel permutation is incompatible with Hadamard rotation.
+    // Hadamard equalizes channel variance, making W_K-based outlier detection invalid.
+    // For TQ types: Hadamard wins (it's mathematically optimal for Lloyd-Max codebooks).
+    // Outlier permutation can still benefit non-TQ quantized KV types (Q8_0, Q4_0).
+    if (cparams.kv_outlier_frac > 0.0f && cparams.k_cache_hadamard) {
+        LLAMA_LOG_WARN("%s: --kv-outlier-frac ignored with Hadamard-enabled TQ types "
+                       "(Hadamard already equalizes channel variance)\n", __func__);
+        cparams.kv_outlier_frac = 0.0f;
     }
 
     if (!cparams.flash_attn && ggml_is_quantized(cparams.type_v)) {

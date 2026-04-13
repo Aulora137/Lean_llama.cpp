@@ -5459,6 +5459,30 @@ struct llama_context * llama_init_from_model(
         params.v_cache_hadamard = false;
     }
 
+    // LeanKV: auto-detect Q/KV dimension mismatch and cap TQ aggressiveness.
+    // Models where n_embd/n_head < n_embd_head_k (e.g., Qwen3-4B: 80 vs 128)
+    // have rank-deficient KV subspaces — quantization noise in the unused
+    // dimensions causes catastrophic PPL degradation at TQ3 and below.
+    {
+        const uint32_t n_head = model->hparams.n_head(0);
+        const uint32_t n_embd_head_k = model->hparams.n_embd_head_k;
+        const uint32_t q_dim = (n_head > 0) ? model->hparams.n_embd / n_head : n_embd_head_k;
+
+        if (q_dim < n_embd_head_k) {
+            auto downgrade = [&](enum ggml_type & type, const char * cache_name) {
+                if (type == GGML_TYPE_TQ3_0 || type == GGML_TYPE_TQ2_0 || type == GGML_TYPE_TQ2_1) {
+                    LLAMA_LOG_WARN("llama_init_from_model: this model has Q-dim (%u) < KV head-dim (%u) — "
+                                  "rank-deficient KV subspace makes aggressive quantization unreliable. "
+                                  "Downgrading %s-cache from %s to tq4_0\n",
+                                  q_dim, n_embd_head_k, cache_name, ggml_type_name(type));
+                    type = GGML_TYPE_TQ4_0;
+                }
+            };
+            downgrade(params.type_k, "K");
+            downgrade(params.type_v, "V");
+        }
+    }
+
     llama_context * ctx = new llama_context(*model);
 
     // add devices to ctx->cparams from model
