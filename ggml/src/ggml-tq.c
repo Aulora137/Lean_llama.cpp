@@ -826,9 +826,96 @@ void ggml_vec_dot_tq2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
 
     const int nb = n / QK_TQ2_1;
     float sumf = 0.0f;
+    int i = 0;
 
-    for (int i = 0; i < nb; i++) {
-        /* Q8_0 blocks for this TQ2_1 block: 128 elements = 4 Q8_0 blocks */
+#if defined(__ARM_NEON)
+    const int8x16_t tq3_values_neon = vld1q_s8(TQ3_LEVELS_I8);
+    const int8x16_t tq2_values_neon = vld1q_s8(TQ2_LEVELS_I8);
+
+    for (; i < nb; i++) {
+        const block_q8_0 * yb = y8 + i * 4;
+        int32x4_t sum_i = vdupq_n_s32(0);
+
+        /* Outlier TQ3 region: 32 elements -> yb[0] */
+        uint8_t idx3[32];
+        unpack_3bit_group(x2[i].qs_out + 0, idx3 + 0);
+        unpack_3bit_group(x2[i].qs_out + 3, idx3 + 8);
+        unpack_3bit_group(x2[i].qs_out + 6, idx3 + 16);
+        unpack_3bit_group(x2[i].qs_out + 9, idx3 + 24);
+
+        const int8x16_t q3_lo = ggml_vqtbl1q_s8(tq3_values_neon, vld1q_u8(idx3));
+        const int8x16_t q3_hi = ggml_vqtbl1q_s8(tq3_values_neon, vld1q_u8(idx3 + 16));
+        const int8x16_t q8_0_lo = vld1q_s8(yb[0].qs);
+        const int8x16_t q8_0_hi = vld1q_s8(yb[0].qs + 16);
+        int32x4_t prod_tq3 = ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), q3_lo, q8_0_lo), q3_hi, q8_0_hi);
+        sumf += GGML_FP16_TO_FP32(x2[i].d_out) * GGML_FP16_TO_FP32(yb[0].d) / 127.0f * (float)vaddvq_s32(prod_tq3);
+
+        /* Normal TQ2 regions: 3 x 32 elements -> yb[1..3] */
+        const ggml_half * d_ptrs[3] = { &x2[i].d_n0, &x2[i].d_n1, &x2[i].d_n2 };
+        const uint8_t * qs_ptrs[3] = { x2[i].qs_n0, x2[i].qs_n1, x2[i].qs_n2 };
+
+        for (int b = 0; b < 3; b++) {
+            uint8_t idx2[32];
+            unpack_2bit_32(qs_ptrs[b], idx2);
+
+            const int8x16_t q2_lo = ggml_vqtbl1q_s8(tq2_values_neon, vld1q_u8(idx2));
+            const int8x16_t q2_hi = ggml_vqtbl1q_s8(tq2_values_neon, vld1q_u8(idx2 + 16));
+            const int8x16_t q8_b_lo = vld1q_s8(yb[1 + b].qs);
+            const int8x16_t q8_b_hi = vld1q_s8(yb[1 + b].qs + 16);
+            int32x4_t prod_tq2 = ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), q2_lo, q8_b_lo), q2_hi, q8_b_hi);
+            sumf += GGML_FP16_TO_FP32(*d_ptrs[b]) * GGML_FP16_TO_FP32(yb[1 + b].d) / 127.0f * (float)vaddvq_s32(prod_tq2);
+        }
+    }
+#elif defined(__AVX2__)
+    const __m128i tq3_values128 = _mm_loadu_si128((const __m128i *)TQ3_LEVELS_I8);
+    const __m128i tq2_values128 = _mm_loadu_si128((const __m128i *)TQ2_LEVELS_I8);
+    const __m256i tq2_values256 = MM256_SET_M128I(tq2_values128, tq2_values128);
+    const __m256i mone = _mm256_set1_epi16(1);
+
+    for (; i < nb; i++) {
+        const block_q8_0 * yb = y8 + i * 4;
+        __m256 accum = _mm256_setzero_ps();
+
+        /* Outlier TQ3 region: 32 elements -> yb[0] */
+        uint8_t idx3[32];
+        unpack_3bit_group(x2[i].qs_out + 0, idx3 + 0);
+        unpack_3bit_group(x2[i].qs_out + 3, idx3 + 8);
+        unpack_3bit_group(x2[i].qs_out + 6, idx3 + 16);
+        unpack_3bit_group(x2[i].qs_out + 9, idx3 + 24);
+
+        const __m256i q3b = MM256_SET_M128I(
+            _mm_shuffle_epi8(tq3_values128, _mm_loadu_si128((const __m128i *)(idx3 + 16))),
+            _mm_shuffle_epi8(tq3_values128, _mm_loadu_si128((const __m128i *)idx3)));
+        const __m256i q8b_0 = _mm256_loadu_si256((const __m256i *)yb[0].qs);
+        const __m256i p16_tq3 = mul_add_epi8(q3b, q8b_0);
+        const __m256i p_tq3 = _mm256_madd_epi16(p16_tq3, mone);
+        accum = _mm256_fmadd_ps(
+            _mm256_set1_ps(GGML_FP16_TO_FP32(yb[0].d) * GGML_FP16_TO_FP32(x2[i].d_out) / 127.0f),
+            _mm256_cvtepi32_ps(p_tq3), accum);
+
+        /* Normal TQ2 regions: 3 x 32 elements -> yb[1..3] */
+        const ggml_half * d_ptrs[3] = { &x2[i].d_n0, &x2[i].d_n1, &x2[i].d_n2 };
+        const uint8_t * qs_ptrs[3] = { x2[i].qs_n0, x2[i].qs_n1, x2[i].qs_n2 };
+
+        for (int b = 0; b < 3; b++) {
+            uint8_t idx2[32];
+            unpack_2bit_32(qs_ptrs[b], idx2);
+
+            const __m256i idx256 = _mm256_loadu_si256((const __m256i *)idx2);
+            const __m256i q2b = _mm256_shuffle_epi8(tq2_values256, idx256);
+            const __m256i q8b_b = _mm256_loadu_si256((const __m256i *)yb[1 + b].qs);
+            const __m256i p16_tq2 = mul_add_epi8(q2b, q8b_b);
+            const __m256i p_tq2 = _mm256_madd_epi16(p16_tq2, mone);
+            accum = _mm256_fmadd_ps(
+                _mm256_set1_ps(GGML_FP16_TO_FP32(yb[1 + b].d) * GGML_FP16_TO_FP32(*d_ptrs[b]) / 127.0f),
+                _mm256_cvtepi32_ps(p_tq2), accum);
+        }
+        sumf += hsum_float_8(accum);
+    }
+#endif
+
+    /* Scalar fallback for any remaining blocks (both SIMD paths consume all i = 0..nb) */
+    for (; i < nb; i++) {
         const block_q8_0 * yb = y8 + i * 4;
 
         /* Outlier TQ3 region: 32 elements -> 1 Q8_0 block */
