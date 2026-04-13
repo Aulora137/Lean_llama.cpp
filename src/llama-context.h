@@ -75,6 +75,12 @@ struct llama_kv_cache {
     std::vector<struct ggml_context *> ctxs;
     std::vector<ggml_backend_buffer_t> bufs;
 
+    // LeanKV: per-layer K-cache type (for adaptive per-layer quantization)
+    // Populated by auto-detect (--kv-outlier-frac -1): layers with more outliers
+    // get a higher-precision type (TQ2_1 or TQ3_0), flat layers use TQ2_0.
+    // Empty when not using auto-detect (falls back to uniform cache.type_k).
+    std::vector<ggml_type> type_k_l;
+
     // LeanKV: per-layer outlier channel permutation (for mixed-precision KV)
     // Populated during KV cache init when kv_outlier_frac > 0.
     // Used by ggml_map_custom1 ops in the attention graph.

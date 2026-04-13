@@ -761,6 +761,10 @@ static bool llama_kv_cache_init(
     cache.type_k  = type_k;
     cache.type_v  = type_v;
 
+    // Initialize per-layer K types to the global default.
+    // May be overridden later by auto-detect (--kv-outlier-frac -1).
+    cache.type_k_l.resize(n_layer, type_k);
+
     cache.cells.clear();
     cache.cells.resize(kv_size);
 
@@ -936,7 +940,8 @@ static bool llama_kv_cache_init(
                 split_cache_i = false;
             }
             int n_embd_head_v = hparams.n_embd_head_v;
-            k = ggml_new_tensor_2d(ctx, type_k, n_embd_head_k, n_head_kv*kv_size);
+            const ggml_type layer_type_k = cache.type_k_l[i];
+            k = ggml_new_tensor_2d(ctx, layer_type_k, n_embd_head_k, n_head_kv*kv_size);
 
             int64_t v_ne = int64_t(n_embd_v_row)*kv_size;
             v = ggml_new_tensor_1d(ctx, type_v, v_ne);
@@ -962,7 +967,7 @@ static bool llama_kv_cache_init(
                         LLAMA_LOG_DEBUG("K_cache(%d, %d): using %d instead of %ld heads\n",
                                 i, is, nhead_kv, extra_K->splits[is]->ne[1]/n_embd_head_k);
                     }
-                    split_k_l.tensor_splits[is] = ggml_new_tensor_2d(ctx, type_k, n_embd_head_k, nhead_kv * kv_size);
+                    split_k_l.tensor_splits[is] = ggml_new_tensor_2d(ctx, layer_type_k, n_embd_head_k, nhead_kv * kv_size);
                     auto split_name = k_name + '.' + std::to_string(is);
                     ggml_set_name(split_k_l.tensor_splits[is], split_name.c_str());
                     mem_split[is] += ggml_nbytes(split_k_l.tensor_splits[is]);
@@ -5910,6 +5915,28 @@ struct llama_context * llama_init_from_model(
                     else if (layer_frac < 0.375f)  frac_histogram[2]++;
                     else                            frac_histogram[3]++;
 
+                    // LeanKV: per-layer adaptive K-cache type selection.
+                    // When auto-detecting, promote layers with outliers to a
+                    // higher-precision type while keeping flat layers at the
+                    // user's requested (most aggressive) type.
+                    if (auto_detect && il < (int)ctx->kv_self.type_k_l.size()) {
+                        const ggml_type base_type = ctx->kv_self.type_k;
+                        if (base_type == GGML_TYPE_TQ2_0 || base_type == GGML_TYPE_TQ2_1) {
+                            // Flat layer: use TQ2_0 (maximum compression)
+                            // Moderate outliers: use TQ2_1 (mixed-precision)
+                            // Heavy outliers: use TQ3_0 (safe)
+                            if      (layer_frac < 0.0625f) ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ2_0;
+                            else if (layer_frac < 0.375f)  ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ2_1;
+                            else                           ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ3_0;
+                        } else if (base_type == GGML_TYPE_TQ3_0) {
+                            // Flat layer: keep TQ3_0
+                            // Heavy outliers: promote to TQ4_0
+                            if (layer_frac >= 0.375f)      ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ4_0;
+                            // else: keep TQ3_0 (already set as default)
+                        }
+                        // TQ4_0 and F16: no adaptation needed (already high precision)
+                    }
+
                     // Build synthetic calibration data (2 tokens: +val, -val to get nonzero variance)
                     float calib_data[512]; // 2 * 256
                     for (int d = 0; d < n_embd_head_k; d++) {
@@ -5953,6 +5980,28 @@ struct llama_context * llama_init_from_model(
                                "0%%=%d layers, 12.5%%=%d, 25%%=%d, 50%%=%d\n",
                                __func__, frac_histogram[0], frac_histogram[1],
                                frac_histogram[2], frac_histogram[3]);
+
+                // Log per-layer type summary if adaptive types were assigned
+                const auto & tkl = ctx->kv_self.type_k_l;
+                bool has_mixed = false;
+                for (size_t il = 1; il < tkl.size(); il++) {
+                    if (tkl[il] != tkl[0]) { has_mixed = true; break; }
+                }
+                if (has_mixed) {
+                    // Count types
+                    int type_counts[GGML_TYPE_COUNT] = {};
+                    for (size_t il = 0; il < tkl.size(); il++) {
+                        type_counts[tkl[il]]++;
+                    }
+                    std::string summary;
+                    for (int t = 0; t < GGML_TYPE_COUNT; t++) {
+                        if (type_counts[t] > 0) {
+                            if (!summary.empty()) summary += ", ";
+                            summary += std::string(ggml_type_name((ggml_type)t)) + "=" + std::to_string(type_counts[t]);
+                        }
+                    }
+                    LLAMA_LOG_INFO("%s: adaptive K-cache types: %s\n", __func__, summary.c_str());
+                }
             }
         }
 
@@ -5983,9 +6032,16 @@ struct llama_context * llama_init_from_model(
                             (float)(memory_size_k + memory_size_v) / (1024.0f * 1024.0f),
                             ggml_type_name(type_k), (float)memory_size_k / (1024.0f * 1024.0f));
                 } else {
+                    // Check if K-cache uses mixed per-layer types
+                    const auto & tkl = ctx->kv_self.type_k_l;
+                    bool k_mixed = false;
+                    for (size_t il = 1; il < tkl.size(); il++) {
+                        if (tkl[il] != tkl[0]) { k_mixed = true; break; }
+                    }
                     LLAMA_LOG_INFO("%s: KV self size  = %7.2f MiB, K (%s): %7.2f MiB, V (%s): %7.2f MiB\n", __func__,
                             (float)(memory_size_k + memory_size_v) / (1024.0f * 1024.0f),
-                            ggml_type_name(type_k), (float)memory_size_k / (1024.0f * 1024.0f),
+                            k_mixed ? "adaptive" : ggml_type_name(type_k),
+                            (float)memory_size_k / (1024.0f * 1024.0f),
                             ggml_type_name(type_v), (float)memory_size_v / (1024.0f * 1024.0f));
                 }
             }
