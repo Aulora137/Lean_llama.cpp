@@ -761,9 +761,12 @@ static bool llama_kv_cache_init(
     cache.type_k  = type_k;
     cache.type_v  = type_v;
 
-    // Initialize per-layer K types to the global default.
-    // May be overridden later by auto-detect (--kv-outlier-frac -1).
-    cache.type_k_l.resize(n_layer, type_k);
+    // Per-layer K types: if auto-detect pre-populated type_k_l before calling
+    // kv_cache_init, preserve those values. Otherwise initialize to the global
+    // default. This allows Phase 3 adaptive type selection to take effect.
+    if ((int)cache.type_k_l.size() != n_layer) {
+        cache.type_k_l.assign(n_layer, type_k);
+    }
 
     cache.cells.clear();
     cache.cells.resize(kv_size);
@@ -5840,20 +5843,22 @@ struct llama_context * llama_init_from_model(
         }
         ctx->backends.push_back(ctx->backend_cpu);
 
-        if (!llama_kv_cache_init(ctx->kv_self, ctx, type_k, type_v, kv_size, cparams.offload_kqv)) {
-            LLAMA_LOG_ERROR("%s: llama_kv_cache_init() failed for self-attention cache\n", __func__);
-            llama_free(ctx);
-            return nullptr;
-        }
-
         // LeanKV: outlier channel calibration from W_K weight norms
         // kv_outlier_frac > 0: static fraction applied to all layers
         // kv_outlier_frac < 0: auto-detect per-layer from variance spectrum
+        //
+        // NOTE: this block runs BEFORE llama_kv_cache_init() so that the
+        // Phase 3 adaptive type selection (type_k_l[i] assignment) happens
+        // before tensors are created. kv_cache_init() will preserve
+        // type_k_l if it's already populated.
         if (cparams.kv_outlier_frac != 0.0f) {
             const bool auto_detect = (cparams.kv_outlier_frac < 0.0f);
-            const int n_layer = (int)ctx->kv_self.k_l.size();
+            const int n_layer = (int)model->hparams.n_layer;
             const int n_embd_head_k = model->hparams.n_embd_head_k;
 
+            // Pre-populate per-layer types to the global default.
+            // Will be overridden per-layer below if auto-detect changes them.
+            ctx->kv_self.type_k_l.assign(n_layer, type_k);
             ctx->kv_self.outlier_perm_k.resize(n_layer);
 
             // Per-layer stats for summary logging
@@ -5919,8 +5924,11 @@ struct llama_context * llama_init_from_model(
                     // When auto-detecting, promote layers with outliers to a
                     // higher-precision type while keeping flat layers at the
                     // user's requested (most aggressive) type.
+                    // Use the local `type_k` (function argument) directly — this
+                    // block runs before kv_cache_init, so ctx->kv_self.type_k
+                    // is still default-initialized.
                     if (auto_detect && il < (int)ctx->kv_self.type_k_l.size()) {
-                        const ggml_type base_type = ctx->kv_self.type_k;
+                        const ggml_type base_type = type_k;
                         if (base_type == GGML_TYPE_TQ2_0 || base_type == GGML_TYPE_TQ2_1) {
                             // Flat layer: use TQ2_0 (maximum compression)
                             // Moderate outliers: use TQ2_1 (mixed-precision)
@@ -6003,6 +6011,15 @@ struct llama_context * llama_init_from_model(
                     LLAMA_LOG_INFO("%s: adaptive K-cache types: %s\n", __func__, summary.c_str());
                 }
             }
+        }
+
+        // Now create the KV cache tensors. If auto-detect ran above,
+        // type_k_l is pre-populated with per-layer adaptive types and
+        // kv_cache_init will honor them when allocating each layer's K tensor.
+        if (!llama_kv_cache_init(ctx->kv_self, ctx, type_k, type_v, kv_size, cparams.offload_kqv)) {
+            LLAMA_LOG_ERROR("%s: llama_kv_cache_init() failed for self-attention cache\n", __func__);
+            llama_free(ctx);
+            return nullptr;
         }
 
         {
