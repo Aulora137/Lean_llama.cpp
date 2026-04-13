@@ -97,6 +97,32 @@ void tq_outlier_config_init_uniform(
     tq_tier_t tier
 );
 
+/**
+ * Auto-detect optimal outlier fraction from per-channel variance spectrum.
+ *
+ * Analyzes the shape of the variance distribution to choose how many channels
+ * need outlier protection. The heuristic counts channels exceeding 2× median
+ * variance (captures moderate + strong outliers) and snaps to block-aligned
+ * fraction choices {0, 12.5%, 25%, 50%}.
+ *
+ * Theoretical motivation: after Hadamard rotation, concentration of measure
+ * at high head_dim leaves few residual outliers. At head_dim=128, typically
+ * 25% of channels still have notable residual variance; at head_dim=256, only
+ * ~12.5% do; at head_dim=512+, Hadamard does almost all the work and the
+ * optimal fraction approaches zero.
+ *
+ * @param channel_var   Per-channel variance (length head_dim)
+ * @param head_dim      Dimension per head
+ * @param stats_out     Optional: [0]=max_ratio, [1]=n_moderate_outliers (>2x median),
+ *                                 [2]=n_strong_outliers (>5x median). Pass NULL to skip.
+ * @return              Recommended fraction: one of {0.0, 0.125, 0.25, 0.5}
+ */
+float tq_auto_detect_outlier_frac(
+    const float * channel_var,
+    int head_dim,
+    float * stats_out
+);
+
 /* ── Mixed-precision quantize/dequantize ──────────────────────────── */
 
 /**

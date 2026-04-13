@@ -2518,7 +2518,7 @@ void gpt_params_print_usage(int /*argc*/, char ** argv, const gpt_params & param
     options.push_back({ "*",           "-ctv,  --cache-type-v TYPE",    "KV cache data type for V (default: %s)", params.cache_type_v.c_str() });
     options.push_back({ "*",           "-ctkd, --cache-type-k-draft TYPE", "KV cache data type for K for the draft model" });
     options.push_back({ "*",           "-ctvd, --cache-type-v-draft TYPE", "KV cache data type for V for the draft model" });
-    options.push_back({ "*",           "       --kv-outlier-frac N",    "fraction of outlier channels for mixed-precision KV (default: %.2f, 0=disabled)", (double)params.kv_outlier_frac });
+    options.push_back({ "*",           "       --kv-outlier-frac N",    "fraction of outlier channels for mixed-precision KV (default: %.2f, 0=disabled, -1=auto-detect per layer)", (double)params.kv_outlier_frac });
 
     options.push_back({ "perplexity" });
     options.push_back({ "perplexity",  "       --all-logits",           "return logits for all tokens in the batch (default: %s)", params.logits_all ? "true" : "false" });
@@ -3558,12 +3558,13 @@ struct llama_context_params common_context_params_to_llama(const gpt_params & pa
     }
 
     // LeanKV: outlier channel permutation is incompatible with Hadamard rotation.
-    // Hadamard equalizes channel variance, making W_K-based outlier detection invalid.
-    // For TQ types: Hadamard wins (it's mathematically optimal for Lloyd-Max codebooks).
-    // Outlier permutation can still benefit non-TQ quantized KV types (Q8_0, Q4_0).
+    // Hadamard equalizes channel variance, making W_K-based outlier detection invalid
+    // for APPLYING permutation. However, auto-detect mode (negative value) still runs
+    // the analysis as a diagnostic — it tells us how heavy-tailed the pre-Hadamard
+    // distribution is, which informs whether Hadamard is doing meaningful work.
     if (cparams.kv_outlier_frac > 0.0f && cparams.k_cache_hadamard) {
         LLAMA_LOG_WARN("%s: --kv-outlier-frac ignored with Hadamard-enabled TQ types "
-                       "(Hadamard already equalizes channel variance)\n", __func__);
+                       "(Hadamard already equalizes channel variance; use negative value for auto-detect diagnostic)\n", __func__);
         cparams.kv_outlier_frac = 0.0f;
     }
 

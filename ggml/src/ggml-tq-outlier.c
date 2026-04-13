@@ -172,6 +172,74 @@ void tq_identify_outliers(
     }
 }
 
+/* ── Auto-detect outlier fraction from variance spectrum ─────────── */
+
+static int float_cmp_desc(const void * a, const void * b) {
+    float fa = *(const float *)a;
+    float fb = *(const float *)b;
+    if (fa > fb) return -1;
+    if (fa < fb) return  1;
+    return 0;
+}
+
+float tq_auto_detect_outlier_frac(
+    const float * channel_var,
+    int head_dim,
+    float * stats_out)
+{
+    assert(head_dim > 0 && head_dim <= TQ_OUTLIER_MAX_DIM);
+
+    /* Sort variances descending to get the spectrum */
+    float sorted[TQ_OUTLIER_MAX_DIM];
+    for (int i = 0; i < head_dim; i++) sorted[i] = channel_var[i];
+    qsort(sorted, (size_t)head_dim, sizeof(float), float_cmp_desc);
+
+    /* Median is the center of the sorted array */
+    float median = sorted[head_dim / 2];
+
+    /* Degenerate case: uniform or zero variance → no outliers */
+    if (median <= 1e-12f) {
+        if (stats_out) {
+            stats_out[0] = 1.0f;  /* max ratio = 1 */
+            stats_out[1] = 0.0f;
+            stats_out[2] = 0.0f;
+        }
+        return 0.0f;
+    }
+
+    /* Count channels above thresholds. sorted[0] is the maximum. */
+    float max_ratio = sorted[0] / median;
+    int n_moderate = 0;  /* > 2x median */
+    int n_strong   = 0;  /* > 5x median */
+    for (int i = 0; i < head_dim; i++) {
+        if (sorted[i] > 5.0f * median) n_strong++;
+        if (sorted[i] > 2.0f * median) n_moderate++;
+    }
+
+    if (stats_out) {
+        stats_out[0] = max_ratio;
+        stats_out[1] = (float)n_moderate;
+        stats_out[2] = (float)n_strong;
+    }
+
+    /* Use n_moderate as the primary signal: captures channels that
+     * meaningfully exceed the typical variance level. Map to block-aligned
+     * fraction choices. The downstream tq_identify_outliers() will round
+     * the actual n_outlier to multiples of 32 for SIMD alignment.
+     *
+     * Thresholds chosen so that:
+     * - Near-Gaussian distributions (few outliers) → 0% or 12.5%
+     * - Moderate heavy tails → 25% (the TQ2_1 default)
+     * - Very heavy tails (rare after Hadamard) → 50%
+     */
+    float raw_frac = (float)n_moderate / (float)head_dim;
+
+    if (raw_frac < 0.0625f) return 0.0f;     /* < 6.25% moderate outliers */
+    if (raw_frac < 0.1875f) return 0.125f;   /* 6.25% - 18.75%            */
+    if (raw_frac < 0.375f)  return 0.25f;    /* 18.75% - 37.5%            */
+    return 0.5f;                             /* > 37.5% (heavy-tailed)    */
+}
+
 /* ── Uniform init (no outlier split) ──────────────────────────────── */
 
 void tq_outlier_config_init_uniform(

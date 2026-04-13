@@ -5627,7 +5627,9 @@ struct llama_context * llama_init_from_model(
     LLAMA_LOG_INFO("%s: k_cache_hadam = %d\n",     __func__, cparams.k_cache_hadamard);
     LLAMA_LOG_INFO("%s: v_cache_hadam = %d\n",     __func__, cparams.v_cache_hadamard);
     if (cparams.kv_outlier_frac > 0.0f) {
-        LLAMA_LOG_INFO("%s: kv_outlier    = %.2f\n", __func__, cparams.kv_outlier_frac);
+        LLAMA_LOG_INFO("%s: kv_outlier    = %.2f (static)\n", __func__, cparams.kv_outlier_frac);
+    } else if (cparams.kv_outlier_frac < 0.0f) {
+        LLAMA_LOG_INFO("%s: kv_outlier    = auto (per-layer variance analysis)\n", __func__);
     }
     LLAMA_LOG_INFO("%s: split_mode_graph_scheduling = %d\n",   __func__, cparams.split_mode_graph_scheduling);
     //LLAMA_LOG_INFO("%s: split_mode_f16= %d\n",     __func__, cparams.split_mode_f16);
@@ -5840,11 +5842,18 @@ struct llama_context * llama_init_from_model(
         }
 
         // LeanKV: outlier channel calibration from W_K weight norms
-        if (cparams.kv_outlier_frac > 0.0f) {
+        // kv_outlier_frac > 0: static fraction applied to all layers
+        // kv_outlier_frac < 0: auto-detect per-layer from variance spectrum
+        if (cparams.kv_outlier_frac != 0.0f) {
+            const bool auto_detect = (cparams.kv_outlier_frac < 0.0f);
             const int n_layer = (int)ctx->kv_self.k_l.size();
             const int n_embd_head_k = model->hparams.n_embd_head_k;
 
             ctx->kv_self.outlier_perm_k.resize(n_layer);
+
+            // Per-layer stats for summary logging
+            int frac_histogram[4] = {0, 0, 0, 0};  // counts for {0, 12.5%, 25%, 50%}
+            int log_count = 0;                     // verbose log cap
 
             for (int il = 0; il < n_layer; il++) {
                 auto & pd = ctx->kv_self.outlier_perm_k[il];
@@ -5869,12 +5878,10 @@ struct llama_context * llama_init_from_model(
                     if (tt.to_float) {
                         tt.to_float(wk_raw.data(), wk_f32.data(), (int64_t)(n_rows * n_cols));
                     } else {
-                        // F32 weights — direct copy
                         memcpy(wk_f32.data(), wk_raw.data(), n_rows * n_cols * sizeof(float));
                     }
 
-                    // Compute per-head-channel row L2 norms (averaged across heads)
-                    // Use first head's norms as representative (all heads share similar patterns)
+                    // Per-channel variance proxy: row L2 norms averaged across heads
                     float channel_var[256] = {};
                     for (int h = 0; h < (int)n_head_kv; h++) {
                         for (int d = 0; d < n_embd_head_k; d++) {
@@ -5888,33 +5895,47 @@ struct llama_context * llama_init_from_model(
                         }
                     }
 
-                    // Use tq_identify_outliers to build the permutation.
-                    // We create synthetic "calibration data" from the row norms (1 token, head_dim channels).
-                    // The variance of a single sample is just the squared value relative to mean.
-                    // Simpler: just argsort channel_var directly.
-                    // But tq_identify_outliers expects [n_tokens × head_dim] calibration data.
-                    // We use a trick: create 1-token data where each channel = sqrt(channel_var).
-                    float calib_row[256];
-                    for (int d = 0; d < n_embd_head_k; d++) {
-                        calib_row[d] = sqrtf(channel_var[d]);
+                    // Determine outlier fraction for this layer
+                    float layer_frac;
+                    float stats[3] = {0.0f, 0.0f, 0.0f};
+                    if (auto_detect) {
+                        layer_frac = tq_auto_detect_outlier_frac(channel_var, n_embd_head_k, stats);
+                    } else {
+                        layer_frac = cparams.kv_outlier_frac;
                     }
-                    // With n_tokens=1, the variance is 0. Instead, feed 2 tokens: +val and -val.
+
+                    // Update histogram for summary
+                    if      (layer_frac < 0.0625f) frac_histogram[0]++;
+                    else if (layer_frac < 0.1875f) frac_histogram[1]++;
+                    else if (layer_frac < 0.375f)  frac_histogram[2]++;
+                    else                            frac_histogram[3]++;
+
+                    // Build synthetic calibration data (2 tokens: +val, -val to get nonzero variance)
                     float calib_data[512]; // 2 * 256
                     for (int d = 0; d < n_embd_head_k; d++) {
-                        calib_data[d] = calib_row[d];
-                        calib_data[n_embd_head_k + d] = -calib_row[d];
+                        float v = sqrtf(channel_var[d]);
+                        calib_data[d] = v;
+                        calib_data[n_embd_head_k + d] = -v;
                     }
 
                     tq_outlier_config oc;
                     tq_identify_outliers(&oc, calib_data, 2, n_embd_head_k,
-                                         cparams.kv_outlier_frac, TQ_TIER_TQ3, TQ_TIER_TQ2);
+                                         layer_frac, TQ_TIER_TQ3, TQ_TIER_TQ2);
 
-                    // Copy permutation to the perm_data struct
                     for (int d = 0; d < n_embd_head_k; d++) {
                         pd.perm[d] = oc.perm[d];
                     }
 
-                    if (il == 0) {
+                    // Per-layer log (auto-detect mode): show all layers that have W_K.
+                    // For hybrid models (Qwen 3.5) this is only attention layers (~8).
+                    // For dense models (32 layers) we cap verbose output after 16 layers.
+                    if (auto_detect && log_count < 16) {
+                        LLAMA_LOG_INFO("%s: outlier K layer %2d: frac=%.3f (%d/%d ch), "
+                                       "max_var/med=%.1fx, moderate=%d, strong=%d\n",
+                                       __func__, il, layer_frac, oc.n_outlier, n_embd_head_k,
+                                       stats[0], (int)stats[1], (int)stats[2]);
+                        log_count++;
+                    } else if (!auto_detect && il == 0) {
                         LLAMA_LOG_INFO("%s: outlier K: %d/%d channels (%.0f%% outlier, layer 0)\n",
                                        __func__, oc.n_outlier, n_embd_head_k,
                                        cparams.kv_outlier_frac * 100.0f);
@@ -5925,6 +5946,13 @@ struct llama_context * llama_init_from_model(
                         pd.perm[d] = d;
                     }
                 }
+            }
+
+            if (auto_detect) {
+                LLAMA_LOG_INFO("%s: outlier K auto-detect summary: "
+                               "0%%=%d layers, 12.5%%=%d, 25%%=%d, 50%%=%d\n",
+                               __func__, frac_histogram[0], frac_histogram[1],
+                               frac_histogram[2], frac_histogram[3]);
             }
         }
 
