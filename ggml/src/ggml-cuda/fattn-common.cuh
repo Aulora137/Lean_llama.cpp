@@ -614,7 +614,7 @@ static __device__ __forceinline__ T dequantize_1_tq4_0(const void * __restrict__
     const int     shift = (i % QK_TQ4) / (QK_TQ4/2);
     const float d = __half2float(x[ib].d);
     const int idx = (x[ib].qs[iqs] >> (4*shift)) & 0x0F;
-    return (T)(tq4_values[idx] / 127.0f * d);
+    return (T)(tq4_cb[idx] / 127.0f * d);
 }
 
 template <typename T>
@@ -638,7 +638,7 @@ static __device__ __forceinline__ T dequantize_1_tq3_0(const void * __restrict__
         case 6: idx = (b2 >> 2) & 7; break;
         default: idx = (b2 >> 5) & 7; break;
     }
-    return (T)(tq3_values[idx] / 127.0f * d);
+    return (T)(tq3_cb[idx] / 127.0f * d);
 }
 
 template <typename T>
@@ -648,7 +648,7 @@ static __device__ __forceinline__ T dequantize_1_tq2_0(const void * __restrict__
     const int     elem = i % QK_TQ2;
     const float d = __half2float(x[ib].d);
     const int idx = (x[ib].qs[elem / 4] >> ((elem % 4) * 2)) & 3;
-    return (T)(tq2_values[idx] / 127.0f * d);
+    return (T)(tq2_cb[idx] / 127.0f * d);
 }
 
 template <typename T>
@@ -675,7 +675,7 @@ static __device__ __forceinline__ T dequantize_1_tq2_1(const void * __restrict__
             case 6: idx = (b2 >> 2) & 7; break;
             default: idx = (b2 >> 5) & 7; break;
         }
-        return (T)(tq3_values[idx] / 127.0f * d);
+        return (T)(tq3_cb[idx] / 127.0f * d);
     } else {
         // Normal region: 3 x TQ2 sub-blocks
         const int norm  = pos - 32;   // 0..95
@@ -689,7 +689,7 @@ static __device__ __forceinline__ T dequantize_1_tq2_1(const void * __restrict__
             default: d = __half2float(x[ib].d_n2); qs = x[ib].qs_n2; break;
         }
         const int idx = (qs[local / 4] >> ((local % 4) * 2)) & 3;
-        return (T)(tq2_values[idx] / 127.0f * d);
+        return (T)(tq2_cb[idx] / 127.0f * d);
     }
 }
 
