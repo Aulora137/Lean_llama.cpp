@@ -4539,6 +4539,10 @@ GGML_CALL static bool ggml_backend_cuda_supports_op(ggml_backend_t backend, cons
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
+                    case GGML_TYPE_TQ4_0:
+                    case GGML_TYPE_TQ3_0:
+                    case GGML_TYPE_TQ2_0:
+                    case GGML_TYPE_TQ2_1:
                         return true;
                     default:
                         return false;
@@ -4587,6 +4591,10 @@ GGML_CALL static bool ggml_backend_cuda_supports_op(ggml_backend_t backend, cons
                     return true;
                 }
                 if (src0_type == GGML_TYPE_F32 && src1_type == GGML_TYPE_IQ4_NL) {
+                    return true;
+                }
+                if (src0_type == GGML_TYPE_F32 && (src1_type == GGML_TYPE_TQ4_0 || src1_type == GGML_TYPE_TQ3_0 ||
+                                                    src1_type == GGML_TYPE_TQ2_0 || src1_type == GGML_TYPE_TQ2_1)) {
                     return true;
                 }
                 if (src0_type == GGML_TYPE_F16 && src1_type == GGML_TYPE_F16) {

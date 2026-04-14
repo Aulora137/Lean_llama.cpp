@@ -458,6 +458,66 @@ static void ggml_cpy_q6_0_f16_cuda(
         ne10, ne11, ne12, nb10, nb11, nb12, nb13, cdst_indirect, graph_cpynode_index++);
 }
 
+// ── LeanKV TurboQuant copy functions ──────────────────────────────────
+
+#define DEFINE_CPY_F32_TQ(name, blck_fn, qk) \
+static void ggml_cpy_f32_##name##_cuda( \
+    const char * cx, char * cdst, const int ne, \
+    const int ne00, const int ne01, const int ne02, const int nb00, const int nb01, const int nb02, \
+    const int nb03, const int ne10, const int ne11, const int ne12, const int nb10, const int nb11, const int nb12, const int nb13, cudaStream_t stream, char ** cdst_indirect, int & graph_cpynode_index) { \
+    GGML_ASSERT(ne % qk == 0); \
+    const int num_blocks = ne / qk; \
+    cpy_f32_q<blck_fn, qk><<<num_blocks, 1, 0, stream>>> \
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, cdst_indirect, graph_cpynode_index++); \
+}
+
+#define DEFINE_CPY_TQ_F32(name, dequant_fn, qk) \
+static void ggml_cpy_##name##_f32_cuda( \
+    const char * cx, char * cdst, const int ne, \
+    const int ne00, const int ne01, const int ne02, \
+    const int nb00, const int nb01, const int nb02, \
+    const int nb03, const int ne10, const int ne11, const int ne12, \
+    const int nb10, const int nb11, const int nb12, const int nb13, \
+    cudaStream_t stream, char ** cdst_indirect, int & graph_cpynode_index) { \
+    const int num_blocks = ne; \
+    cpy_q_f32<cpy_blck_q_f32<dequant_fn, qk>, qk><<<num_blocks, 1, 0, stream>>>( \
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, \
+        ne10, ne11, ne12, nb10, nb11, nb12, nb13, cdst_indirect, graph_cpynode_index++); \
+}
+
+#define DEFINE_CPY_TQ_F16(name, dequant_fn, qk) \
+static void ggml_cpy_##name##_f16_cuda( \
+    const char * cx, char * cdst, const int ne, \
+    const int ne00, const int ne01, const int ne02, \
+    const int nb00, const int nb01, const int nb02, \
+    const int nb03, const int ne10, const int ne11, const int ne12, \
+    const int nb10, const int nb11, const int nb12, const int nb13, \
+    cudaStream_t stream, char ** cdst_indirect, int & graph_cpynode_index) { \
+    const int num_blocks = ne; \
+    cpy_q_f32<cpy_blck_q_f16<dequant_fn, qk>, qk><<<num_blocks, 1, 0, stream>>>( \
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, \
+        ne10, ne11, ne12, nb10, nb11, nb12, nb13, cdst_indirect, graph_cpynode_index++); \
+}
+
+DEFINE_CPY_F32_TQ(tq4_0, cpy_blck_f32_tq4_0, QK_TQ4)
+DEFINE_CPY_F32_TQ(tq3_0, cpy_blck_f32_tq3_0, QK_TQ3)
+DEFINE_CPY_F32_TQ(tq2_0, cpy_blck_f32_tq2_0, QK_TQ2)
+DEFINE_CPY_F32_TQ(tq2_1, cpy_blck_f32_tq2_1, QK_TQ2_1)
+
+DEFINE_CPY_TQ_F32(tq4_0, dequantize_tq4_0, QK_TQ4)
+DEFINE_CPY_TQ_F32(tq3_0, dequantize_tq3_0, QK_TQ3)
+DEFINE_CPY_TQ_F32(tq2_0, dequantize_tq2_0, QK_TQ2)
+DEFINE_CPY_TQ_F32(tq2_1, dequantize_tq2_1, QK_TQ2_1)
+
+DEFINE_CPY_TQ_F16(tq4_0, dequantize_tq4_0, QK_TQ4)
+DEFINE_CPY_TQ_F16(tq3_0, dequantize_tq3_0, QK_TQ3)
+DEFINE_CPY_TQ_F16(tq2_0, dequantize_tq2_0, QK_TQ2)
+DEFINE_CPY_TQ_F16(tq2_1, dequantize_tq2_1, QK_TQ2_1)
+
+#undef DEFINE_CPY_F32_TQ
+#undef DEFINE_CPY_TQ_F32
+#undef DEFINE_CPY_TQ_F16
+
 static __global__ void k_transpose_q8_0(const char * cx, char * cdst,
                                    const int ne10, const int ne11, const int ne12,
                                    const int nb01, const int nb02, const int nb03,
@@ -627,6 +687,30 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         ggml_cpy_q6_0_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
     } else if (src0->type == GGML_TYPE_Q6_0 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_q6_0_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ4_0) {
+        ggml_cpy_f32_tq4_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_TQ4_0 && src1->type == GGML_TYPE_F32) {
+        ggml_cpy_tq4_0_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_TQ4_0 && src1->type == GGML_TYPE_F16) {
+        ggml_cpy_tq4_0_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ3_0) {
+        ggml_cpy_f32_tq3_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F32) {
+        ggml_cpy_tq3_0_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F16) {
+        ggml_cpy_tq3_0_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ2_0) {
+        ggml_cpy_f32_tq2_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_TQ2_0 && src1->type == GGML_TYPE_F32) {
+        ggml_cpy_tq2_0_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_TQ2_0 && src1->type == GGML_TYPE_F16) {
+        ggml_cpy_tq2_0_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ2_1) {
+        ggml_cpy_f32_tq2_1_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_TQ2_1 && src1->type == GGML_TYPE_F32) {
+        ggml_cpy_tq2_1_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+    } else if (src0->type == GGML_TYPE_TQ2_1 && src1->type == GGML_TYPE_F16) {
+        ggml_cpy_tq2_1_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_flt_cuda<half, half> (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_BF16) {
@@ -724,6 +808,30 @@ void* ggml_cuda_cpy_fn(const ggml_tensor * src0, ggml_tensor * src1) {
         return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_q6_0, QK6_0>, QK6_0>;
     } else if (src0->type == GGML_TYPE_Q6_0 && src1->type == GGML_TYPE_F16) {
         return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_q6_0, QK6_0>, QK6_0>;
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ4_0) {
+        return (void*) cpy_f32_q<cpy_blck_f32_tq4_0, QK_TQ4>;
+    } else if (src0->type == GGML_TYPE_TQ4_0 && src1->type == GGML_TYPE_F32) {
+        return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_tq4_0, QK_TQ4>, QK_TQ4>;
+    } else if (src0->type == GGML_TYPE_TQ4_0 && src1->type == GGML_TYPE_F16) {
+        return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_tq4_0, QK_TQ4>, QK_TQ4>;
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ3_0) {
+        return (void*) cpy_f32_q<cpy_blck_f32_tq3_0, QK_TQ3>;
+    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F32) {
+        return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_tq3_0, QK_TQ3>, QK_TQ3>;
+    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F16) {
+        return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_tq3_0, QK_TQ3>, QK_TQ3>;
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ2_0) {
+        return (void*) cpy_f32_q<cpy_blck_f32_tq2_0, QK_TQ2>;
+    } else if (src0->type == GGML_TYPE_TQ2_0 && src1->type == GGML_TYPE_F32) {
+        return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_tq2_0, QK_TQ2>, QK_TQ2>;
+    } else if (src0->type == GGML_TYPE_TQ2_0 && src1->type == GGML_TYPE_F16) {
+        return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_tq2_0, QK_TQ2>, QK_TQ2>;
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ2_1) {
+        return (void*) cpy_f32_q<cpy_blck_f32_tq2_1, QK_TQ2_1>;
+    } else if (src0->type == GGML_TYPE_TQ2_1 && src1->type == GGML_TYPE_F32) {
+        return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_tq2_1, QK_TQ2_1>, QK_TQ2_1>;
+    } else if (src0->type == GGML_TYPE_TQ2_1 && src1->type == GGML_TYPE_F16) {
+        return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_tq2_1, QK_TQ2_1>, QK_TQ2_1>;
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
         return (void*) cpy_flt<cpy_1_flt<half, half>>;
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_BF16) {
