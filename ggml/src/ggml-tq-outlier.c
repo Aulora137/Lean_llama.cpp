@@ -240,6 +240,96 @@ float tq_auto_detect_outlier_frac(
     return 0.5f;                             /* > 37.5% (heavy-tailed)    */
 }
 
+/* ── Experimental: parameterized auto-detect for threshold tuning ── */
+
+/* Map raw_frac to block-aligned fraction choices. Shared by all metrics
+ * that produce a "fraction of channels to protect" signal. */
+static inline float map_raw_frac_to_choice(float raw_frac) {
+    if (raw_frac < 0.0625f) return 0.0f;
+    if (raw_frac < 0.1875f) return 0.125f;
+    if (raw_frac < 0.375f)  return 0.25f;
+    return 0.5f;
+}
+
+float tq_auto_detect_outlier_frac_ex(
+    const float * channel_var,
+    int head_dim,
+    float total_variance,
+    float median_total_var,
+    int metric,
+    float threshold,
+    float * stats_out)
+{
+    assert(head_dim > 0 && head_dim <= TQ_OUTLIER_MAX_DIM);
+
+    /* Sort variances descending to get the spectrum */
+    float sorted[TQ_OUTLIER_MAX_DIM];
+    for (int i = 0; i < head_dim; i++) sorted[i] = channel_var[i];
+    qsort(sorted, (size_t)head_dim, sizeof(float), float_cmp_desc);
+
+    float median = sorted[head_dim / 2];
+
+    if (median <= 1e-12f) {
+        if (stats_out) {
+            stats_out[0] = 1.0f;
+            stats_out[1] = 0.0f;
+            stats_out[2] = 0.0f;
+        }
+        return 0.0f;
+    }
+
+    /* Always compute the baseline signals so stats_out is meaningful
+     * regardless of metric. */
+    float max_ratio = sorted[0] / median;
+    int n_moderate = 0;
+    int n_strong   = 0;
+    for (int i = 0; i < head_dim; i++) {
+        if (sorted[i] > 5.0f * median) n_strong++;
+        if (sorted[i] > threshold * median) n_moderate++;
+    }
+
+    if (stats_out) {
+        stats_out[0] = max_ratio;
+        stats_out[1] = (float)n_moderate;
+        stats_out[2] = (float)n_strong;
+    }
+
+    switch (metric) {
+        case TQ_OUTLIER_METRIC_MAX_RATIO: {
+            /* Layer is "outlier-heavy" if any channel stands out sharply.
+             * Returns a flat 0.25 (promote to TQ2_1) or 0.0 (flat). */
+            return (max_ratio > threshold) ? 0.25f : 0.0f;
+        }
+
+        case TQ_OUTLIER_METRIC_TOTAL_VAR: {
+            /* Per-layer total variance predicts "information density."
+             * Layers with more total variance than the cross-layer median
+             * need more bits regardless of per-channel outlier structure. */
+            if (median_total_var <= 1e-12f) return 0.0f;
+            float ratio = total_variance / median_total_var;
+            return (ratio > threshold) ? 0.25f : 0.0f;
+        }
+
+        case TQ_OUTLIER_METRIC_HYBRID: {
+            /* Promote if EITHER signal fires: n_moderate raw_frac > 6.25%
+             * OR max_ratio > threshold. */
+            float raw_frac = (float)n_moderate / (float)head_dim;
+            float from_nmod = map_raw_frac_to_choice(raw_frac);
+            float from_max  = (max_ratio > threshold) ? 0.25f : 0.0f;
+            return (from_nmod > from_max) ? from_nmod : from_max;
+        }
+
+        case TQ_OUTLIER_METRIC_N_MODERATE:
+        default: {
+            /* Current default: n_moderate threshold.
+             * Note: the threshold argument controls the "2× median" multiplier
+             * so lowering it (e.g. to 1.5) promotes more layers. */
+            float raw_frac = (float)n_moderate / (float)head_dim;
+            return map_raw_frac_to_choice(raw_frac);
+        }
+    }
+}
+
 /* ── Uniform init (no outlier split) ──────────────────────────────── */
 
 void tq_outlier_config_init_uniform(

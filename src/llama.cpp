@@ -5861,58 +5861,149 @@ struct llama_context * llama_init_from_model(
             ctx->kv_self.type_k_l.assign(n_layer, type_k);
             ctx->kv_self.outlier_perm_k.resize(n_layer);
 
-            // Per-layer stats for summary logging
-            int frac_histogram[4] = {0, 0, 0, 0};  // counts for {0, 12.5%, 25%, 50%}
-            int log_count = 0;                     // verbose log cap
+            // LeanKV adaptive outlier policy.
+            //
+            // Default threshold depends on head_dim, because Hadamard rotation's
+            // concentration-of-measure effect scales with √d:
+            //
+            //   head_dim ≤  96 → disabled (TQ2 broken at very low d; use TQ3/TQ4)
+            //   head_dim  128  → 1.5× median (Mistral/Llama sweet spot)
+            //   head_dim  256  → 2.0× median (Gemma/Qwen 3.5 safe default)
+            //   head_dim ≥ 512 → disabled (Hadamard does all the work; use uniform)
+            //
+            // Users can override with environment variables for tuning:
+            //   LEANKV_OUTLIER_METRIC: 0=n_moderate, 1=max_ratio, 2=total_var, 3=hybrid
+            //   LEANKV_OUTLIER_THRESHOLD: metric-specific threshold (float)
+            int   exp_metric    = TQ_OUTLIER_METRIC_N_MODERATE;
+            float exp_threshold = 2.0f;  // conservative fallback
+            bool  adaptive_enabled = true;
 
+            if (auto_detect) {
+                // Head-dim-based default
+                if (n_embd_head_k <= 96) {
+                    adaptive_enabled = false;  // TQ2 unusable below ~128, auto-downgrade handles it
+                } else if (n_embd_head_k <= 128) {
+                    exp_threshold = 1.5f;      // aggressive — head_dim=128 dense sweet spot
+                } else if (n_embd_head_k <= 256) {
+                    exp_threshold = 2.0f;      // conservative — head_dim=256 (Gemma, Qwen 3.5)
+                } else {
+                    adaptive_enabled = false;  // head_dim≥512: Hadamard handles it, adaptive noise
+                }
+
+                // Env var overrides
+                const char * ms = getenv("LEANKV_OUTLIER_METRIC");
+                const char * ts = getenv("LEANKV_OUTLIER_THRESHOLD");
+                if (ms) { exp_metric = atoi(ms); adaptive_enabled = true; }
+                if (ts) { exp_threshold = (float)atof(ts); adaptive_enabled = true; }
+
+                LLAMA_LOG_INFO("%s: outlier K policy: head_dim=%d metric=%d threshold=%.2f%s%s\n",
+                               __func__, n_embd_head_k, exp_metric, exp_threshold,
+                               adaptive_enabled ? "" : " (ADAPTIVE DISABLED)",
+                               (ms || ts) ? " [env override]" : "");
+            }
+
+            // Pass 1: read W_K for each layer, compute per-channel variance,
+            // and accumulate per-layer total variance. This is needed for
+            // METRIC_TOTAL_VAR which compares each layer to the cross-layer median.
+            std::vector<float> channel_var_all(n_layer * 256, 0.0f);
+            std::vector<float> total_var(n_layer, 0.0f);
+            std::vector<bool>  layer_has_wk(n_layer, false);
+
+            for (int il = 0; il < n_layer; il++) {
+                const ggml_tensor * wk = model->layers[il].wk;
+                if (!wk) continue;
+
+                const int64_t n_cols = wk->ne[0];  // n_embd (input dim)
+                const int64_t n_rows = wk->ne[1];  // n_embd_k_gqa (output dim)
+                const int64_t n_head_kv = n_rows / n_embd_head_k;
+
+                size_t wk_nbytes = ggml_nbytes(wk);
+                std::vector<uint8_t> wk_raw(wk_nbytes);
+                ggml_backend_tensor_get(wk, wk_raw.data(), 0, wk_nbytes);
+
+                ggml_type_traits_t tt = ggml_internal_get_type_traits(wk->type);
+                std::vector<float> wk_f32(n_rows * n_cols);
+                if (tt.to_float) {
+                    tt.to_float(wk_raw.data(), wk_f32.data(), (int64_t)(n_rows * n_cols));
+                } else {
+                    memcpy(wk_f32.data(), wk_raw.data(), n_rows * n_cols * sizeof(float));
+                }
+
+                // Per-channel variance proxy: row L2 norms averaged across heads
+                float * cvar = channel_var_all.data() + il * 256;
+                for (int h = 0; h < (int)n_head_kv; h++) {
+                    for (int d = 0; d < n_embd_head_k; d++) {
+                        int row_idx = h * n_embd_head_k + d;
+                        float norm2 = 0.0f;
+                        const float * row = wk_f32.data() + row_idx * n_cols;
+                        for (int c = 0; c < (int)n_cols; c++) {
+                            norm2 += row[c] * row[c];
+                        }
+                        cvar[d] += norm2 / (float)n_head_kv;
+                    }
+                }
+
+                // Layer total variance (used by METRIC_TOTAL_VAR)
+                float sum = 0.0f;
+                for (int d = 0; d < n_embd_head_k; d++) sum += cvar[d];
+                total_var[il] = sum;
+                layer_has_wk[il] = true;
+            }
+
+            // Compute cross-layer median total variance (for METRIC_TOTAL_VAR)
+            float median_total_var = 0.0f;
+            {
+                std::vector<float> nonzero;
+                nonzero.reserve(n_layer);
+                for (int il = 0; il < n_layer; il++) {
+                    if (layer_has_wk[il] && total_var[il] > 0.0f) nonzero.push_back(total_var[il]);
+                }
+                if (!nonzero.empty()) {
+                    std::sort(nonzero.begin(), nonzero.end());
+                    median_total_var = nonzero[nonzero.size() / 2];
+                }
+            }
+
+            // Per-layer stats for summary logging
+            int   frac_histogram[4]  = {0, 0, 0, 0};  // counts for {0, 12.5%, 25%, 50%}
+            int   log_count          = 0;             // verbose log cap
+            float spectrum_max_ratio = 0.0f;          // worst max/median across all layers
+            float spectrum_sum_ratio = 0.0f;          // for mean
+            int   spectrum_count     = 0;
+
+            // Pass 2: decide per-layer outlier fraction and K-cache type,
+            // build permutation tables using the existing channel_var_all data.
             for (int il = 0; il < n_layer; il++) {
                 auto & pd = ctx->kv_self.outlier_perm_k[il];
                 pd.head_dim = n_embd_head_k;
 
-                // Compute per-channel row norms of W_K as variance proxy.
-                // W_K has shape [n_embd, n_embd_k_gqa] where n_embd_k_gqa = n_head_kv * n_embd_head_k.
-                // Each row of the output (n_embd_k_gqa dimension) corresponds to one K channel.
-                const ggml_tensor * wk = model->layers[il].wk;
-                if (wk) {
-                    const int64_t n_cols = wk->ne[0];  // n_embd (input dim)
-                    const int64_t n_rows = wk->ne[1];  // n_embd_k_gqa (output dim)
-                    const int64_t n_head_kv = n_rows / n_embd_head_k;
-
-                    // Dequantize weight matrix to FP32
-                    size_t wk_nbytes = ggml_nbytes(wk);
-                    std::vector<uint8_t> wk_raw(wk_nbytes);
-                    ggml_backend_tensor_get(wk, wk_raw.data(), 0, wk_nbytes);
-
-                    ggml_type_traits_t tt = ggml_internal_get_type_traits(wk->type);
-                    std::vector<float> wk_f32(n_rows * n_cols);
-                    if (tt.to_float) {
-                        tt.to_float(wk_raw.data(), wk_f32.data(), (int64_t)(n_rows * n_cols));
-                    } else {
-                        memcpy(wk_f32.data(), wk_raw.data(), n_rows * n_cols * sizeof(float));
-                    }
-
-                    // Per-channel variance proxy: row L2 norms averaged across heads
-                    float channel_var[256] = {};
-                    for (int h = 0; h < (int)n_head_kv; h++) {
-                        for (int d = 0; d < n_embd_head_k; d++) {
-                            int row_idx = h * n_embd_head_k + d;
-                            float norm2 = 0.0f;
-                            const float * row = wk_f32.data() + row_idx * n_cols;
-                            for (int c = 0; c < (int)n_cols; c++) {
-                                norm2 += row[c] * row[c];
-                            }
-                            channel_var[d] += norm2 / (float)n_head_kv;
-                        }
-                    }
+                if (layer_has_wk[il]) {
+                    const float * channel_var = channel_var_all.data() + il * 256;
 
                     // Determine outlier fraction for this layer
                     float layer_frac;
                     float stats[3] = {0.0f, 0.0f, 0.0f};
-                    if (auto_detect) {
-                        layer_frac = tq_auto_detect_outlier_frac(channel_var, n_embd_head_k, stats);
+                    if (auto_detect && adaptive_enabled) {
+                        layer_frac = tq_auto_detect_outlier_frac_ex(
+                            channel_var, n_embd_head_k,
+                            total_var[il], median_total_var,
+                            exp_metric, exp_threshold, stats);
+                    } else if (auto_detect) {
+                        // Adaptive is disabled for this head_dim regime — all layers
+                        // keep the uniform type_k. Still compute stats for the log.
+                        (void)tq_auto_detect_outlier_frac_ex(
+                            channel_var, n_embd_head_k,
+                            total_var[il], median_total_var,
+                            exp_metric, exp_threshold, stats);
+                        layer_frac = 0.0f;  // no promotion
                     } else {
                         layer_frac = cparams.kv_outlier_frac;
                     }
+
+                    // Track spectrum stats for the skew summary
+                    if (stats[0] > spectrum_max_ratio) spectrum_max_ratio = stats[0];
+                    spectrum_sum_ratio += stats[0];
+                    spectrum_count++;
 
                     // Update histogram for summary
                     if      (layer_frac < 0.0625f) frac_histogram[0]++;
@@ -5921,28 +6012,18 @@ struct llama_context * llama_init_from_model(
                     else                            frac_histogram[3]++;
 
                     // LeanKV: per-layer adaptive K-cache type selection.
-                    // When auto-detecting, promote layers with outliers to a
-                    // higher-precision type while keeping flat layers at the
-                    // user's requested (most aggressive) type.
                     // Use the local `type_k` (function argument) directly — this
                     // block runs before kv_cache_init, so ctx->kv_self.type_k
                     // is still default-initialized.
                     if (auto_detect && il < (int)ctx->kv_self.type_k_l.size()) {
                         const ggml_type base_type = type_k;
                         if (base_type == GGML_TYPE_TQ2_0 || base_type == GGML_TYPE_TQ2_1) {
-                            // Flat layer: use TQ2_0 (maximum compression)
-                            // Moderate outliers: use TQ2_1 (mixed-precision)
-                            // Heavy outliers: use TQ3_0 (safe)
                             if      (layer_frac < 0.0625f) ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ2_0;
                             else if (layer_frac < 0.375f)  ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ2_1;
                             else                           ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ3_0;
                         } else if (base_type == GGML_TYPE_TQ3_0) {
-                            // Flat layer: keep TQ3_0
-                            // Heavy outliers: promote to TQ4_0
                             if (layer_frac >= 0.375f)      ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ4_0;
-                            // else: keep TQ3_0 (already set as default)
                         }
-                        // TQ4_0 and F16: no adaptation needed (already high precision)
                     }
 
                     // Build synthetic calibration data (2 tokens: +val, -val to get nonzero variance)
@@ -5961,14 +6042,12 @@ struct llama_context * llama_init_from_model(
                         pd.perm[d] = oc.perm[d];
                     }
 
-                    // Per-layer log (auto-detect mode): show all layers that have W_K.
-                    // For hybrid models (Qwen 3.5) this is only attention layers (~8).
-                    // For dense models (32 layers) we cap verbose output after 16 layers.
                     if (auto_detect && log_count < 16) {
+                        float tvr = (median_total_var > 0.0f) ? (total_var[il] / median_total_var) : 1.0f;
                         LLAMA_LOG_INFO("%s: outlier K layer %2d: frac=%.3f (%d/%d ch), "
-                                       "max_var/med=%.1fx, moderate=%d, strong=%d\n",
+                                       "max_var/med=%.1fx, moderate=%d, total_var/med=%.2fx\n",
                                        __func__, il, layer_frac, oc.n_outlier, n_embd_head_k,
-                                       stats[0], (int)stats[1], (int)stats[2]);
+                                       stats[0], (int)stats[1], tvr);
                         log_count++;
                     } else if (!auto_detect && il == 0) {
                         LLAMA_LOG_INFO("%s: outlier K: %d/%d channels (%.0f%% outlier, layer 0)\n",
@@ -5984,6 +6063,19 @@ struct llama_context * llama_init_from_model(
             }
 
             if (auto_detect) {
+                // Spectrum skew: indicates how heavy-tailed the W_K distribution
+                // is overall. Helps users know whether they're in "safe default"
+                // territory or a regime where tuning may be required.
+                float spectrum_mean_ratio = (spectrum_count > 0)
+                    ? spectrum_sum_ratio / (float)spectrum_count
+                    : 1.0f;
+                const char * skew_label =
+                    (spectrum_max_ratio < 3.0f)  ? "LOW (nearly flat — adaptive minimal effect)" :
+                    (spectrum_max_ratio < 10.0f) ? "MODERATE (typical dense transformer — default OK)" :
+                                                   "HIGH (heavy-tailed — consider PPL validation)";
+                LLAMA_LOG_INFO("%s: outlier K spectrum: max/med=%.2fx (mean %.2fx) → skew %s\n",
+                               __func__, spectrum_max_ratio, spectrum_mean_ratio, skew_label);
+
                 LLAMA_LOG_INFO("%s: outlier K auto-detect summary: "
                                "0%%=%d layers, 12.5%%=%d, 25%%=%d, 50%%=%d\n",
                                __func__, frac_histogram[0], frac_histogram[1],

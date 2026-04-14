@@ -1,0 +1,66 @@
+=============================================================
+V1 Cross-Architecture Screening (3 chunks)
+Date: Mon Apr 13 04:14:03 PM PDT 2026
+Commit: cecf6180 fix: Phase 3 adaptive K-cache selection — correct timing and base type
+=============================================================
+
+====== Qwen3.5-9B (head_dim=256, hybrid Mamba+attention, 8 attn layers) ======
+
+--- F16/F16 ---
+llama_init_from_model: KV self size  =   64.00 MiB, K (f16):   32.00 MiB, V (f16):   32.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 7.9080 +/- 0.35692
+
+--- TQ2_0/F16 uniform ---
+llama_init_from_model: KV self size  =   37.00 MiB, K (tq2_0):    5.00 MiB, V (f16):   32.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 8.1236 +/- 0.36946
+
+--- V1 adaptive (1.5×) ---
+llama_init_from_model: outlier K policy: metric=0 threshold=1.50
+llama_init_from_model: outlier K auto-detect summary: 0%=6 layers, 12.5%=1, 25%=1, 50%=0
+llama_init_from_model: adaptive K-cache types: tq2_0=30, tq2_1=2
+llama_init_from_model: KV self size  =   37.12 MiB, K (adaptive):    5.12 MiB, V (f16):   32.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 8.0870 +/- 0.36767
+
+--- TQ2_1/F16 uniform ---
+llama_init_from_model: KV self size  =   37.50 MiB, K (tq2_1):    5.50 MiB, V (f16):   32.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 8.0449 +/- 0.36294
+
+====== Gemma3-4B (head_dim=256, dense, 34 layers) ======
+
+--- F16/F16 ---
+llama_init_from_model: KV self size  =  272.00 MiB, K (f16):  136.00 MiB, V (f16):  136.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 15.9087 +/- 1.04752
+
+--- TQ2_0/F16 uniform ---
+llama_init_from_model: KV self size  =  157.25 MiB, K (tq2_0):   21.25 MiB, V (f16):  136.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 19.3255 +/- 1.17573
+
+--- V1 adaptive (1.5×) ---
+llama_init_from_model: outlier K policy: metric=0 threshold=1.50
+llama_init_from_model: outlier K auto-detect summary: 0%=6 layers, 12.5%=14, 25%=11, 50%=3
+llama_init_from_model: adaptive K-cache types: tq3_0=3, tq2_0=6, tq2_1=25
+llama_init_from_model: KV self size  =  159.56 MiB, K (adaptive):   23.56 MiB, V (f16):  136.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 18.9615 +/- 1.20337
+
+--- TQ2_1/F16 uniform ---
+llama_init_from_model: KV self size  =  159.38 MiB, K (tq2_1):   23.38 MiB, V (f16):  136.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 18.5749 +/- 1.17901
+
+====== Qwen2.5-0.5B (head_dim=64, dense, 24 layers) ======
+
+--- F16/F16 ---
+llama_init_from_model: KV self size  =   24.00 MiB, K (f16):   12.00 MiB, V (f16):   12.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 15.4860 +/- 0.78956
+
+--- TQ2_0/F16 uniform ---
+llama_init_from_model: KV self size  =   13.88 MiB, K (tq2_0):    1.88 MiB, V (f16):   12.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 4132.3754 +/- 306.47354
+
+--- V1 adaptive (1.5×) ---
+llama_init_from_model: outlier K policy: metric=0 threshold=1.50
+llama_init_from_model: outlier K auto-detect summary: 0%=2 layers, 12.5%=4, 25%=16, 50%=2
+llama_init_from_model: adaptive K-cache types: tq3_0=2, tq2_0=2, tq2_1=20
+llama_init_from_model: KV self size  =   14.09 MiB, K (adaptive):    2.09 MiB, V (f16):   12.00 MiB
+Final estimate: PPL over 3 chunks for n_ctx=2048 = 2740.0120 +/- 168.88110
+
+--- TQ2_1/F16 uniform ---

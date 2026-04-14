@@ -123,6 +123,42 @@ float tq_auto_detect_outlier_frac(
     float * stats_out
 );
 
+/* ── Experimental: parameterized auto-detect ──────────────────────── */
+
+/* Metric codes for tq_auto_detect_outlier_frac_ex() */
+#define TQ_OUTLIER_METRIC_N_MODERATE     0  /* count channels > threshold × median (default) */
+#define TQ_OUTLIER_METRIC_MAX_RATIO      1  /* promote if max/median > threshold             */
+#define TQ_OUTLIER_METRIC_TOTAL_VAR      2  /* promote if layer total > threshold × layer_median_total */
+#define TQ_OUTLIER_METRIC_HYBRID         3  /* union of N_MODERATE and MAX_RATIO              */
+
+/**
+ * Parameterized version of tq_auto_detect_outlier_frac() for threshold tuning.
+ *
+ * Allows trial-and-error experiments via LEANKV_OUTLIER_METRIC and
+ * LEANKV_OUTLIER_THRESHOLD environment variables without rebuilding.
+ *
+ * For metric=TOTAL_VAR the caller must provide the pre-computed per-layer
+ * total variance and the cross-layer median. Ignored by other metrics.
+ *
+ * @param channel_var     Per-channel variance (length head_dim)
+ * @param head_dim        Dimension per head
+ * @param total_variance  Sum of channel_var[] for this layer (used by METRIC_TOTAL_VAR)
+ * @param median_total_var Cross-layer median of total_variance (used by METRIC_TOTAL_VAR)
+ * @param metric          One of TQ_OUTLIER_METRIC_*
+ * @param threshold       Metric-specific threshold (e.g. 2.0f for default behavior)
+ * @param stats_out       Optional: [0]=max_ratio, [1]=n_moderate, [2]=n_strong
+ * @return                Recommended fraction: one of {0.0, 0.125, 0.25, 0.5}
+ */
+float tq_auto_detect_outlier_frac_ex(
+    const float * channel_var,
+    int head_dim,
+    float total_variance,
+    float median_total_var,
+    int metric,
+    float threshold,
+    float * stats_out
+);
+
 /* ── Mixed-precision quantize/dequantize ──────────────────────────── */
 
 /**
