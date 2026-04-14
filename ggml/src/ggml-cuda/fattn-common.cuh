@@ -709,6 +709,10 @@ constexpr __device__ vec_dot_KQ_f16_t get_vec_dot_KQ_f16(ggml_type type_K) {
            type_K == GGML_TYPE_Q5_1   ? vec_dot_fattn_vec_KQ_q5_1<half, Dk>   :
            type_K == GGML_TYPE_Q6_0   ? vec_dot_fattn_vec_KQ_q6_0<half, Dk>   :
            type_K == GGML_TYPE_Q8_0   ? vec_dot_fattn_vec_KQ_q8_0<half, Dk>   :
+           type_K == GGML_TYPE_TQ4_0  ? vec_dot_fattn_vec_KQ_tq4_0<half, Dk>  :
+           type_K == GGML_TYPE_TQ3_0  ? vec_dot_fattn_vec_KQ_tq3_0<half, Dk>  :
+           type_K == GGML_TYPE_TQ2_0  ? vec_dot_fattn_vec_KQ_tq2_0<half, Dk>  :
+           type_K == GGML_TYPE_TQ2_1  ? vec_dot_fattn_vec_KQ_tq2_1<half, Dk>  :
            type_K == GGML_TYPE_F16    ? vec_dot_fattn_vec_KQ_f16<half, Dk>    :
            nullptr;
 }
@@ -722,6 +726,10 @@ constexpr __device__ vec_dot_KQ_f32_t get_vec_dot_KQ_f32(ggml_type type_K) {
            type_K == GGML_TYPE_Q5_1   ? vec_dot_fattn_vec_KQ_q5_1<float, Dk>   :
            type_K == GGML_TYPE_Q6_0   ? vec_dot_fattn_vec_KQ_q6_0<float, Dk>   :
            type_K == GGML_TYPE_Q8_0   ? vec_dot_fattn_vec_KQ_q8_0<float, Dk>   :
+           type_K == GGML_TYPE_TQ4_0  ? vec_dot_fattn_vec_KQ_tq4_0<float, Dk>  :
+           type_K == GGML_TYPE_TQ3_0  ? vec_dot_fattn_vec_KQ_tq3_0<float, Dk>  :
+           type_K == GGML_TYPE_TQ2_0  ? vec_dot_fattn_vec_KQ_tq2_0<float, Dk>  :
+           type_K == GGML_TYPE_TQ2_1  ? vec_dot_fattn_vec_KQ_tq2_1<float, Dk>  :
            type_K == GGML_TYPE_F16    ? vec_dot_fattn_vec_KQ_f16<float, Dk>    :
            nullptr;
 }

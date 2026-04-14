@@ -135,6 +135,46 @@ static __device__ __forceinline__ int get_one_int_from_table_16(const int & q4) 
     return *((const int *) &val0_8);
 }
 
+// ── TQ codebook lookup helpers for FA vec_dot ────────────────────────
+
+// TQ4: 4-bit nibble indices → int8 codebook values packed as int32
+static __device__ __forceinline__ int tq4_get_int_from_nibbles(const int & q4) {
+    const uint8_t * q = (const uint8_t *) &q4;
+    const char4 val = make_char4(tq4_cb[q[0]], tq4_cb[q[1]], tq4_cb[q[2]], tq4_cb[q[3]]);
+    return *((const int *) &val);
+}
+
+// TQ3: extract 4 consecutive 3-bit indices from a 3-byte group, look up in codebook
+// half=0: elements 0-3, half=1: elements 4-7
+static __device__ __forceinline__ int tq3_get_int_from_group(const uint8_t * in, int half_idx) {
+    const uint8_t b0 = in[0], b1 = in[1], b2 = in[2];
+    int i0, i1, i2, i3;
+    if (half_idx == 0) {
+        i0 =  b0       & 7;
+        i1 = (b0 >> 3) & 7;
+        i2 = ((b0 >> 6) & 3) | ((b1 & 1) << 2);
+        i3 = (b1 >> 1) & 7;
+    } else {
+        i0 = (b1 >> 4) & 7;
+        i1 = ((b1 >> 7) & 1) | ((b2 & 3) << 1);
+        i2 = (b2 >> 2) & 7;
+        i3 = (b2 >> 5) & 7;
+    }
+    const char4 val = make_char4(tq3_cb[i0], tq3_cb[i1], tq3_cb[i2], tq3_cb[i3]);
+    return *((const int *) &val);
+}
+
+// TQ2: 1 byte → 4 2-bit indices → int8 codebook values packed as int32
+static __device__ __forceinline__ int tq2_get_int_from_byte(uint8_t byte) {
+    const char4 val = make_char4(
+        tq2_cb[(byte >> 0) & 3],
+        tq2_cb[(byte >> 2) & 3],
+        tq2_cb[(byte >> 4) & 3],
+        tq2_cb[(byte >> 6) & 3]
+    );
+    return *((const int *) &val);
+}
+
 template<typename T, int Dk>
 static __device__ __forceinline__ T vec_dot_fattn_vec_KQ_iq4_nl(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
@@ -383,6 +423,188 @@ static __device__ __forceinline__ T vec_dot_fattn_vec_KQ_f16(
         const half2 K_ik = K_h2[k_KQ];
         sum +=  __low2float(K_ik) * Q_f2[k_KQ_0/WARP_SIZE].x;
         sum += __high2float(K_ik) * Q_f2[k_KQ_0/WARP_SIZE].y;
+    }
+
+    return sum;
+}
+
+// ── TQ Flash Attention vec_dot_KQ implementations ────────────────────
+
+// TQ4_0: 4-bit codebook, QK=32, qs[16]. Same nibble layout as IQ4_NL.
+template<typename T, int Dk>
+static __device__ __forceinline__ T vec_dot_fattn_vec_KQ_tq4_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_tq4_0 * K_tq4 = (const block_tq4_0 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    T sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < Dk/sizeof(int); k_KQ_0 += WARP_SIZE) {
+        const int k_KQ = k_KQ_0 + threadIdx.x;
+
+        const int ib    = k_KQ / (QK_TQ4/4);          // 32 elems / 4 per int = 8
+        const int iqs4  = k_KQ % (QK_TQ4/8);         // 16 bytes / 4 bytes = 4 int32s in qs
+        const int shift = k_KQ & (QK_TQ4/8);          // 0 or 4: nibble select within int32
+
+        const int v = tq4_get_int_from_nibbles((get_int_b2(K_tq4[ib].qs, iqs4) >> shift) & 0x0F0F0F0F);
+        const int u = Q_q8[k_KQ_0/WARP_SIZE];
+
+        const int sumi = ggml_cuda_dp4a(v, u, 0);
+
+#ifdef FP16_AVAILABLE
+        if (std::is_same<T, half>::value) {
+            const half2  * Q_ds = (const half2  *) Q_ds_v;
+            const float d_k = __half2float(K_tq4[ib].d) / 127.0f;
+            sum += (T) (((half) sumi) * __float2half(d_k) * __low2half(Q_ds[k_KQ_0/WARP_SIZE]));
+        } else
+#endif // FP16_AVAILABLE
+        {
+            const float2 * Q_ds = (const float2 *) Q_ds_v;
+            sum += (T) ((float)sumi * (__half2float(K_tq4[ib].d) / 127.0f) * Q_ds[k_KQ_0/WARP_SIZE].x);
+        }
+    }
+
+    return sum;
+}
+
+// TQ3_0: 3-bit codebook, QK=32, qs[12] (4 groups × 3 bytes × 8 elements)
+template<typename T, int Dk>
+static __device__ __forceinline__ T vec_dot_fattn_vec_KQ_tq3_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_tq3_0 * K_tq3 = (const block_tq3_0 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    T sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < Dk/sizeof(int); k_KQ_0 += WARP_SIZE) {
+        const int k_KQ = k_KQ_0 + threadIdx.x;
+
+        const int ib  = k_KQ / (QK_TQ3/4);          // 32 elems / 4 per int = 8
+        const int pos = k_KQ % (QK_TQ3/4);           // 0..7: which group-of-4 within block
+
+        // 8 elements per 3-byte group; pos indexes groups of 4
+        const int group   = pos / 2;                  // which 3-byte group (0..3)
+        const int half_idx = pos % 2;                 // first 4 (0) or last 4 (1) in group
+
+        const int v = tq3_get_int_from_group(K_tq3[ib].qs + group * 3, half_idx);
+        const int u = Q_q8[k_KQ_0/WARP_SIZE];
+
+        const int sumi = ggml_cuda_dp4a(v, u, 0);
+
+#ifdef FP16_AVAILABLE
+        if (std::is_same<T, half>::value) {
+            const half2  * Q_ds = (const half2  *) Q_ds_v;
+            const float d_k = __half2float(K_tq3[ib].d) / 127.0f;
+            sum += (T) (((half) sumi) * __float2half(d_k) * __low2half(Q_ds[k_KQ_0/WARP_SIZE]));
+        } else
+#endif // FP16_AVAILABLE
+        {
+            const float2 * Q_ds = (const float2 *) Q_ds_v;
+            sum += (T) ((float)sumi * (__half2float(K_tq3[ib].d) / 127.0f) * Q_ds[k_KQ_0/WARP_SIZE].x);
+        }
+    }
+
+    return sum;
+}
+
+// TQ2_0: 2-bit codebook, QK=32, qs[8] (4 elements per byte)
+template<typename T, int Dk>
+static __device__ __forceinline__ T vec_dot_fattn_vec_KQ_tq2_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_tq2_0 * K_tq2 = (const block_tq2_0 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    T sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < Dk/sizeof(int); k_KQ_0 += WARP_SIZE) {
+        const int k_KQ = k_KQ_0 + threadIdx.x;
+
+        const int ib  = k_KQ / (QK_TQ2/4);          // 32 elems / 4 per int = 8
+        const int pos = k_KQ % (QK_TQ2/4);           // 0..7: byte index in qs
+
+        const int v = tq2_get_int_from_byte(K_tq2[ib].qs[pos]);
+        const int u = Q_q8[k_KQ_0/WARP_SIZE];
+
+        const int sumi = ggml_cuda_dp4a(v, u, 0);
+
+#ifdef FP16_AVAILABLE
+        if (std::is_same<T, half>::value) {
+            const half2  * Q_ds = (const half2  *) Q_ds_v;
+            const float d_k = __half2float(K_tq2[ib].d) / 127.0f;
+            sum += (T) (((half) sumi) * __float2half(d_k) * __low2half(Q_ds[k_KQ_0/WARP_SIZE]));
+        } else
+#endif // FP16_AVAILABLE
+        {
+            const float2 * Q_ds = (const float2 *) Q_ds_v;
+            sum += (T) ((float)sumi * (__half2float(K_tq2[ib].d) / 127.0f) * Q_ds[k_KQ_0/WARP_SIZE].x);
+        }
+    }
+
+    return sum;
+}
+
+// TQ2_1: mixed-precision, QK=128 (32 outlier TQ3 + 96 normal TQ2, 4 scales)
+template<typename T, int Dk>
+static __device__ __forceinline__ T vec_dot_fattn_vec_KQ_tq2_1(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_tq2_1 * K_tq2_1 = (const block_tq2_1 *) K_c;
+    GGML_UNUSED(Q_v);
+
+    T sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < Dk/sizeof(int); k_KQ_0 += WARP_SIZE) {
+        const int k_KQ = k_KQ_0 + threadIdx.x;
+
+        const int ib  = k_KQ / (QK_TQ2_1/4);        // 128 elems / 4 = 32 int32 positions per block
+        const int pos = k_KQ % (QK_TQ2_1/4);         // 0..31
+        const int elem_start = pos * 4;
+
+        int v;
+        float d_k;
+
+        if (elem_start < 32) {
+            // TQ3 outlier region: elements 0..31
+            d_k = __half2float(K_tq2_1[ib].d_out) / 127.0f;
+            const int group    = pos / 2;             // 3-byte group index (0..3)
+            const int half_idx = pos % 2;             // first or second 4 elements in group
+            v = tq3_get_int_from_group(K_tq2_1[ib].qs_out + group * 3, half_idx);
+        } else {
+            // TQ2 normal region: elements 32..127 → 3 sub-blocks of 32
+            const int norm     = elem_start - 32;     // 0..95
+            const int blk      = norm / 32;            // sub-block 0, 1, 2
+            const int local    = norm % 32;
+            const int byte_idx = local / 4;
+
+            const uint8_t * qs;
+            switch (blk) {
+                case 0:  d_k = __half2float(K_tq2_1[ib].d_n0) / 127.0f; qs = K_tq2_1[ib].qs_n0; break;
+                case 1:  d_k = __half2float(K_tq2_1[ib].d_n1) / 127.0f; qs = K_tq2_1[ib].qs_n1; break;
+                default: d_k = __half2float(K_tq2_1[ib].d_n2) / 127.0f; qs = K_tq2_1[ib].qs_n2; break;
+            }
+            v = tq2_get_int_from_byte(qs[byte_idx]);
+        }
+
+        const int u = Q_q8[k_KQ_0/WARP_SIZE];
+        const int sumi = ggml_cuda_dp4a(v, u, 0);
+
+#ifdef FP16_AVAILABLE
+        if (std::is_same<T, half>::value) {
+            const half2  * Q_ds = (const half2  *) Q_ds_v;
+            sum += (T) (((half) sumi) * __float2half(d_k) * __low2half(Q_ds[k_KQ_0/WARP_SIZE]));
+        } else
+#endif // FP16_AVAILABLE
+        {
+            const float2 * Q_ds = (const float2 *) Q_ds_v;
+            sum += (T) ((float)sumi * d_k * Q_ds[k_KQ_0/WARP_SIZE].x);
+        }
     }
 
     return sum;
@@ -692,6 +914,10 @@ constexpr __device__ vec_dot_KQ_f16_t get_vec_dot_KQ_f16(ggml_type type_K) {
            type_K == GGML_TYPE_Q5_1   ? vec_dot_fattn_vec_KQ_q5_1<half, Dk>   :
            type_K == GGML_TYPE_Q6_0   ? vec_dot_fattn_vec_KQ_q6_0<half, Dk>   :
            type_K == GGML_TYPE_Q8_0   ? vec_dot_fattn_vec_KQ_q8_0<half, Dk>   :
+           type_K == GGML_TYPE_TQ4_0  ? vec_dot_fattn_vec_KQ_tq4_0<half, Dk>  :
+           type_K == GGML_TYPE_TQ3_0  ? vec_dot_fattn_vec_KQ_tq3_0<half, Dk>  :
+           type_K == GGML_TYPE_TQ2_0  ? vec_dot_fattn_vec_KQ_tq2_0<half, Dk>  :
+           type_K == GGML_TYPE_TQ2_1  ? vec_dot_fattn_vec_KQ_tq2_1<half, Dk>  :
            type_K == GGML_TYPE_F16    ? vec_dot_fattn_vec_KQ_f16<half, Dk>    :
            nullptr;
 }
@@ -705,6 +931,10 @@ constexpr __device__ vec_dot_KQ_f32_t get_vec_dot_KQ_f32(ggml_type type_K) {
            type_K == GGML_TYPE_Q5_1   ? vec_dot_fattn_vec_KQ_q5_1<float, Dk>   :
            type_K == GGML_TYPE_Q6_0   ? vec_dot_fattn_vec_KQ_q6_0<float, Dk>   :
            type_K == GGML_TYPE_Q8_0   ? vec_dot_fattn_vec_KQ_q8_0<float, Dk>   :
+           type_K == GGML_TYPE_TQ4_0  ? vec_dot_fattn_vec_KQ_tq4_0<float, Dk>  :
+           type_K == GGML_TYPE_TQ3_0  ? vec_dot_fattn_vec_KQ_tq3_0<float, Dk>  :
+           type_K == GGML_TYPE_TQ2_0  ? vec_dot_fattn_vec_KQ_tq2_0<float, Dk>  :
+           type_K == GGML_TYPE_TQ2_1  ? vec_dot_fattn_vec_KQ_tq2_1<float, Dk>  :
            type_K == GGML_TYPE_F16    ? vec_dot_fattn_vec_KQ_f16<float, Dk>    :
            nullptr;
 }

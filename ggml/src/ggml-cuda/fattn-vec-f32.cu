@@ -77,6 +77,15 @@ void ggml_cuda_flash_attn_ext_vec_f32(ggml_backend_cuda_context & ctx, ggml_tens
     FATTN_VEC_F32_CASE(128, GGML_TYPE_Q6_0,   GGML_TYPE_Q6_0)
     FATTN_VEC_F32_CASE(128, GGML_TYPE_Q8_0,   GGML_TYPE_Q6_0)
 
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ4_0,  GGML_TYPE_TQ4_0)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ3_0,  GGML_TYPE_TQ3_0)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ2_0,  GGML_TYPE_TQ2_0)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ2_1,  GGML_TYPE_TQ2_1)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ4_0,  GGML_TYPE_F16)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ3_0,  GGML_TYPE_F16)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ2_0,  GGML_TYPE_F16)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ2_1,  GGML_TYPE_F16)
+
     FATTN_VEC_F32_CASE_DKDV(192, 128, GGML_TYPE_F16, GGML_TYPE_F16)
     FATTN_VEC_F32_CASE_DKDV(192, 128, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
 #else
@@ -93,6 +102,15 @@ void ggml_cuda_flash_attn_ext_vec_f32(ggml_backend_cuda_context & ctx, ggml_tens
     FATTN_VEC_F32_CASE(128, GGML_TYPE_Q8_0,   GGML_TYPE_IQ4_NL)
     FATTN_VEC_F32_CASE(128, GGML_TYPE_Q6_0,   GGML_TYPE_Q5_0)
     FATTN_VEC_F32_CASE(128, GGML_TYPE_Q8_0,   GGML_TYPE_Q6_0)
+
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ4_0,  GGML_TYPE_TQ4_0)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ3_0,  GGML_TYPE_TQ3_0)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ2_0,  GGML_TYPE_TQ2_0)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ2_1,  GGML_TYPE_TQ2_1)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ4_0,  GGML_TYPE_F16)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ3_0,  GGML_TYPE_F16)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ2_0,  GGML_TYPE_F16)
+    FATTN_VEC_F32_CASE(128, GGML_TYPE_TQ2_1,  GGML_TYPE_F16)
 
     FATTN_VEC_F32_CASE_DKDV(192, 128, GGML_TYPE_F16, GGML_TYPE_F16)
     FATTN_VEC_F32_CASE_DKDV(192, 128, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
@@ -128,16 +146,25 @@ bool ggml_cuda_fattn_vec_f32_is_supported([[maybe_unused]] ggml_backend_cuda_con
            (K->type == GGML_TYPE_Q6_0 && V->type == GGML_TYPE_Q5_0)   ||
            (K->type == GGML_TYPE_Q6_0 && V->type == GGML_TYPE_Q6_0)   ||
            (K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q6_0)   ||
-           (K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_IQ4_NL);
+           (K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_IQ4_NL) ||
+           (K->type == GGML_TYPE_TQ4_0 && (V->type == GGML_TYPE_TQ4_0 || V->type == GGML_TYPE_F16)) ||
+           (K->type == GGML_TYPE_TQ3_0 && (V->type == GGML_TYPE_TQ3_0 || V->type == GGML_TYPE_F16)) ||
+           (K->type == GGML_TYPE_TQ2_0 && (V->type == GGML_TYPE_TQ2_0 || V->type == GGML_TYPE_F16)) ||
+           (K->type == GGML_TYPE_TQ2_1 && (V->type == GGML_TYPE_TQ2_1 || V->type == GGML_TYPE_F16));
 #else
     if (K->ne[0] == 128) {
         if (K->type == V->type) {
-            return K->type == GGML_TYPE_Q4_0 || K->type == GGML_TYPE_Q8_0 || K->type == GGML_TYPE_F16 || K->type == GGML_TYPE_IQ4_NL;
+            return K->type == GGML_TYPE_Q4_0 || K->type == GGML_TYPE_Q8_0 || K->type == GGML_TYPE_F16 || K->type == GGML_TYPE_IQ4_NL ||
+                   K->type == GGML_TYPE_TQ4_0 || K->type == GGML_TYPE_TQ3_0 || K->type == GGML_TYPE_TQ2_0 || K->type == GGML_TYPE_TQ2_1;
         }
         return (K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_IQ4_NL) ||
                (K->type == GGML_TYPE_Q6_0 && V->type == GGML_TYPE_Q5_0)   ||
                (K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q6_0)   ||
-               (K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_IQ4_NL);
+               (K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_IQ4_NL) ||
+               (K->type == GGML_TYPE_TQ4_0 && V->type == GGML_TYPE_F16)   ||
+               (K->type == GGML_TYPE_TQ3_0 && V->type == GGML_TYPE_F16)   ||
+               (K->type == GGML_TYPE_TQ2_0 && V->type == GGML_TYPE_F16)   ||
+               (K->type == GGML_TYPE_TQ2_1 && V->type == GGML_TYPE_F16);
     }
     if (K->type != V->type) return false;
     if (K->ne[0] == 64) {
