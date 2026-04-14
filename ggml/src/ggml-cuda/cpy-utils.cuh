@@ -276,7 +276,10 @@ static __device__ void quantize_f32_tq4_0_block(const float * __restrict__ x, bl
         sumq2 += w0 * v0 * v0   + w1 * v1 * v1;
     }
 
-    y->d = sumq2 > 0 ? sumqx / sumq2 : d;
+    // Scale d by 127 to match normalized dequant LUT convention:
+    // dequant uses (codebook_i8/127) * d, so d must be in "amax" scale, not "amax/127"
+    const float d_final = sumq2 > 0 ? sumqx / sumq2 : d;
+    y->d = d_final * 127.0f;
 }
 
 static __device__ void quantize_f32_tq2_0_block(const float * __restrict__ x, block_tq2_0 * __restrict__ y) {
@@ -304,7 +307,8 @@ static __device__ void quantize_f32_tq2_0_block(const float * __restrict__ x, bl
         sumq2 += w * v * v;
     }
 
-    y->d = sumq2 > 0 ? sumqx / sumq2 : d;
+    const float d_final = sumq2 > 0 ? sumqx / sumq2 : d;
+    y->d = d_final * 127.0f;
 
     // Pack 4 indices per byte (2-bit each)
     for (int byte = 0; byte < QK_TQ2/4; ++byte) {
@@ -340,7 +344,8 @@ static __device__ void quantize_f32_tq3_0_block(const float * __restrict__ x, bl
         sumq2 += w * v * v;
     }
 
-    y->d = sumq2 > 0 ? sumqx / sumq2 : d;
+    const float d_final = sumq2 > 0 ? sumqx / sumq2 : d;
+    y->d = d_final * 127.0f;
 
     // Pack 8 values per 3 bytes (3-bit each), 4 groups of 8 = 32 values, 12 bytes
     for (int g = 0; g < 4; ++g) {
@@ -376,7 +381,8 @@ static __device__ void quantize_f32_tq3_sub(const float * __restrict__ x, ggml_h
         sumq2 += w * v * v;
     }
 
-    *d_out = sumq2 > 0 ? sumqx / sumq2 : d;
+    const float d_final_tq3 = sumq2 > 0 ? sumqx / sumq2 : d;
+    *d_out = d_final_tq3 * 127.0f;
 
     for (int g = 0; g < 4; ++g) {
         const uint8_t * idx = indices + g * 8;
@@ -411,7 +417,8 @@ static __device__ void quantize_f32_tq2_sub(const float * __restrict__ x, ggml_h
         sumq2 += w * v * v;
     }
 
-    *d_out = sumq2 > 0 ? sumqx / sumq2 : d;
+    const float d_final_tq2 = sumq2 > 0 ? sumqx / sumq2 : d;
+    *d_out = d_final_tq2 * 127.0f;
 
     for (int byte = 0; byte < 8; ++byte) {
         qs_out[byte] = indices[4*byte]
