@@ -1,13 +1,20 @@
 #!/bin/bash
-# CUDA Batch Overnight Run — Cross-architecture TQ validation on RTX 4090
+# CUDA Batch Overnight Run — Comprehensive cross-architecture TQ validation
 #
-# Tests 3 models × 6 KV cache configs = 18 total 160-chunk PPL runs on
+# Tests 5 models × 6 KV cache configs = 30 total 160-chunk PPL runs on
 # WikiText-2. Uses the Phase 3.5 V1 adaptive policy with head_dim-aware
 # defaults already committed in the feature branch.
 #
-# EXPECTED RUNTIME: ~2-3 hours on RTX 4090 (prompt eval ~7400 t/s, so
-# 160 × 2048 tokens per config = 327k tokens per config, ~44 sec per
-# config prompt eval + some decode time).
+# Model coverage (the three qualitative regimes + edge cases):
+#   - Mistral 7B        : head_dim=128 dense, "clean" case, hero model
+#   - Qwen3-8B          : head_dim=128 dense, TQ2-sensitive
+#   - Gemma 3-4B        : head_dim=256 dense, TQ-loves-regularization
+#   - Llama 3-8B        : head_dim=128 dense, flat W_K "Llama mystery"
+#   - Qwen3-4B          : head_dim=128 RANK-DEFICIENT — auto-downgrade test
+#
+# EXPECTED RUNTIME: ~4-5 hours on RTX 4090 (prompt eval ~7400 t/s).
+# On the 5th model (Qwen3-4B), the auto-downgrade logic should kick in
+# and force TQ4 for the TQ2/TQ3 configs — confirms the safety net works.
 #
 # PREREQUISITES (run once after cloning on a new Vast.ai instance):
 #   cd ~/Lean_llama.cpp && git checkout feature/tq2-outlier-tiered
@@ -31,11 +38,13 @@ OUT="docs/cuda-batch-results.txt"
 NGL="${NGL:-99}"        # Full GPU offload
 CTX="${CTX:-2048}"
 
-# ─── Model URLs (unsloth Q4_K_M) ────────────────────────────────────────
+# ─── Model URLs (Q4_K_M) ────────────────────────────────────────────────
 declare -A MODEL_URLS=(
     ["Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"]="https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
     ["Qwen3-8B-Q4_K_M.gguf"]="https://huggingface.co/unsloth/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf"
     ["gemma-3-4b-it-Q4_K_M.gguf"]="https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf"
+    ["Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"]="https://huggingface.co/bartowski/Meta-Llama-3-8B-Instruct-GGUF/resolve/main/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+    ["Qwen3-4B-Q4_K_M.gguf"]="https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
 )
 
 # ─── Sanity checks ──────────────────────────────────────────────────────
@@ -102,7 +111,7 @@ run_config() {
 # ─── Main batch ─────────────────────────────────────────────────────────
 {
 echo "====================================================================="
-echo "CUDA Batch Overnight — 3 models × 6 configs (18 total 160-chunk runs)"
+echo "CUDA Batch Overnight — 5 models × 6 configs (30 total 160-chunk runs)"
 echo "Date:     $(date)"
 echo "Host:     $(hostname)"
 echo "GPU:      $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
@@ -113,7 +122,9 @@ echo "====================================================================="
 for model_entry in \
     "Mistral-7B:$MODELS_DIR/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf" \
     "Qwen3-8B:$MODELS_DIR/Qwen3-8B-Q4_K_M.gguf" \
-    "Gemma3-4B:$MODELS_DIR/gemma-3-4b-it-Q4_K_M.gguf"; do
+    "Gemma3-4B:$MODELS_DIR/gemma-3-4b-it-Q4_K_M.gguf" \
+    "Llama3-8B:$MODELS_DIR/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf" \
+    "Qwen3-4B:$MODELS_DIR/Qwen3-4B-Q4_K_M.gguf"; do
 
     MODEL_LABEL="${model_entry%%:*}"
     MODEL_PATH="${model_entry#*:}"
