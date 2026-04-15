@@ -700,6 +700,15 @@ static __device__ __forceinline__ T dequantize_1_f16(const void * __restrict__ v
     return x[i];
 }
 
+// NOTE: These duplicate copies exist only because fattn-common.cuh is
+// included by non-vec FA kernels (fattn-mma-*, fattn-tile-*, fattn-wmma-*)
+// that compile this header but never actually call these dispatch functions.
+// The real dispatch used by vec FA lives in fattn-vec-common.cuh.
+//
+// TQ types are intentionally NOT listed here — their vec_dot functions
+// (vec_dot_fattn_vec_KQ_tq2_0/tq2_1/tq3_0/tq4_0) are defined in
+// fattn-vec-common.cuh, which the non-vec kernels don't include. Listing
+// them here would cause "identifier undefined" errors in those TUs.
 template <int Dk>
 constexpr __device__ vec_dot_KQ_f16_t get_vec_dot_KQ_f16(ggml_type type_K) {
     return type_K == GGML_TYPE_Q4_0   ? vec_dot_fattn_vec_KQ_q4_0<half, Dk>   :
@@ -709,10 +718,6 @@ constexpr __device__ vec_dot_KQ_f16_t get_vec_dot_KQ_f16(ggml_type type_K) {
            type_K == GGML_TYPE_Q5_1   ? vec_dot_fattn_vec_KQ_q5_1<half, Dk>   :
            type_K == GGML_TYPE_Q6_0   ? vec_dot_fattn_vec_KQ_q6_0<half, Dk>   :
            type_K == GGML_TYPE_Q8_0   ? vec_dot_fattn_vec_KQ_q8_0<half, Dk>   :
-           type_K == GGML_TYPE_TQ4_0  ? vec_dot_fattn_vec_KQ_tq4_0<half, Dk>  :
-           type_K == GGML_TYPE_TQ3_0  ? vec_dot_fattn_vec_KQ_tq3_0<half, Dk>  :
-           type_K == GGML_TYPE_TQ2_0  ? vec_dot_fattn_vec_KQ_tq2_0<half, Dk>  :
-           type_K == GGML_TYPE_TQ2_1  ? vec_dot_fattn_vec_KQ_tq2_1<half, Dk>  :
            type_K == GGML_TYPE_F16    ? vec_dot_fattn_vec_KQ_f16<half, Dk>    :
            nullptr;
 }
@@ -726,10 +731,6 @@ constexpr __device__ vec_dot_KQ_f32_t get_vec_dot_KQ_f32(ggml_type type_K) {
            type_K == GGML_TYPE_Q5_1   ? vec_dot_fattn_vec_KQ_q5_1<float, Dk>   :
            type_K == GGML_TYPE_Q6_0   ? vec_dot_fattn_vec_KQ_q6_0<float, Dk>   :
            type_K == GGML_TYPE_Q8_0   ? vec_dot_fattn_vec_KQ_q8_0<float, Dk>   :
-           type_K == GGML_TYPE_TQ4_0  ? vec_dot_fattn_vec_KQ_tq4_0<float, Dk>  :
-           type_K == GGML_TYPE_TQ3_0  ? vec_dot_fattn_vec_KQ_tq3_0<float, Dk>  :
-           type_K == GGML_TYPE_TQ2_0  ? vec_dot_fattn_vec_KQ_tq2_0<float, Dk>  :
-           type_K == GGML_TYPE_TQ2_1  ? vec_dot_fattn_vec_KQ_tq2_1<float, Dk>  :
            type_K == GGML_TYPE_F16    ? vec_dot_fattn_vec_KQ_f16<float, Dk>    :
            nullptr;
 }
