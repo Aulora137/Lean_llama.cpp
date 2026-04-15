@@ -218,6 +218,12 @@ struct llama_context {
     FILE * expert_log_file = nullptr;
     std::vector<struct ggml_tensor *> expert_topk_tensors; // ffn_moe_topk per layer
 
+    // LeanKV Phase 7: K-vector calibration dump state
+    // When LEANKV_CALIBRATION_DUMP=1 is set, each forward pass writes raw
+    // per-layer K tensors (post-RoPE, pre-cache-store) to a binary file for
+    // offline SVD analysis. See src/leankv-calib.h for format.
+    struct leankv_calib_state * leankv_calib = nullptr;
+
     // LeanInfer Phase 3b: dynamic expert prefetch
     // After layer N's gating, madvise(WILLNEED) the selected experts in the next
     // expert_prefetch_n_ahead layers. 0 = disabled.

@@ -57,6 +57,8 @@ add_library(llama
             llama-hparams.cpp
             llama-delta-net.h
             llama-delta-net.cpp
+            leankv-calib.h
+            leankv-calib.cpp
             unicode.h
             unicode.cpp
             unicode-data.cpp

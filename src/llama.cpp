@@ -32,6 +32,9 @@
 // LeanKV: outlier channel treatment for mixed-precision KV cache
 #include "ggml-tq-outlier.h"
 
+// LeanKV Phase 7: K-vector calibration dump (env-gated, zero-cost when off)
+#include "leankv-calib.h"
+
 // LeanInfer profiler (optional — only present when building alongside LeanInfer)
 #if __has_include("../../instrument/leaninfer_profiler.h")
 #include "../../instrument/leaninfer_profiler.h"
@@ -675,6 +678,10 @@ llama_context::~llama_context() {
     }
 
     ggml_backend_buffer_free(buf_output);
+
+    // LeanKV Phase 7: finalize K-vector calibration dump (if active)
+    leankv_calib_free(leankv_calib);
+    leankv_calib = nullptr;
 }
 
 //
@@ -3807,6 +3814,25 @@ static bool expert_log_sched_eval_cb(struct ggml_tensor * t, bool ask, void * us
     return true;
 }
 
+// LeanKV Phase 7: scheduler eval callback for K-vector calibration dump.
+// Matches tensors whose name starts with "leankv_k_calib-" (set at graph
+// build time in llm_build_kv_store when LEANKV_CALIBRATION_DUMP=1 is set),
+// and writes raw tensor bytes to the calibration file. Layer index is
+// parsed from the name suffix.
+static bool leankv_calib_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
+    static const char * const prefix = "leankv_k_calib-";
+    static const size_t prefix_len   = 15;
+    if (ask) {
+        return strncmp(t->name, prefix, prefix_len) == 0;
+    }
+    llama_context * lctx = static_cast<llama_context *>(user_data);
+    if (!lctx || !lctx->leankv_calib) return true;
+
+    const int il = std::atoi(t->name + prefix_len);
+    leankv_calib_dump_tensor(lctx->leankv_calib, t, il);
+    return true;
+}
+
 // return 0 on success
 // return positive int on warning
 // return negative int on error
@@ -4070,7 +4096,11 @@ static int llama_decode_internal(
             lctx.reset_scheduler();
             // LeanInfer Phase 2c/3b: install expert callback when logging or prefetch active.
             // Passes llama_context* as user_data (Phase 2c used FILE*; unified for Phase 3b).
-            if (lctx.expert_log_file || lctx.expert_prefetch_n_ahead > 0) {
+            // LeanKV Phase 7: if calibration dump is active, it takes priority (and
+            // precludes expert logging for this run — they'd need a chained callback).
+            if (lctx.leankv_calib) {
+                ggml_backend_sched_set_eval_callback(lctx.sched, leankv_calib_sched_eval_cb, &lctx);
+            } else if (lctx.expert_log_file || lctx.expert_prefetch_n_ahead > 0) {
                 ggml_backend_sched_set_eval_callback(lctx.sched, expert_log_sched_eval_cb, &lctx);
             } else {
                 ggml_backend_sched_set_eval_callback(lctx.sched, lctx.cparams.cb_eval, lctx.cparams.cb_eval_user_data);
@@ -5492,6 +5522,10 @@ struct llama_context * llama_init_from_model(
     }
 
     llama_context * ctx = new llama_context(*model);
+
+    // LeanKV Phase 7: initialize K-vector calibration dump if
+    // LEANKV_CALIBRATION_DUMP=1 is set in the environment. No-op otherwise.
+    ctx->leankv_calib = leankv_calib_init();
 
     // add devices to ctx->cparams from model
     for (int i : model->devices) {

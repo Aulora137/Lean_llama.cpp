@@ -4,6 +4,7 @@
 #include "llama-model.h"
 #include "llama-context.h"
 #include "llama-delta-net.h"
+#include "leankv-calib.h"
 
 #include "ggml.h"
 
@@ -593,6 +594,14 @@ void llm_build_context::llm_build_kv_store(
     const int64_t n_embd_head_k = hparams.n_embd_head_k;
 
     GGML_ASSERT(kv.size == n_ctx);
+
+    // LeanKV Phase 7: when K-vector calibration is active, rename k_cur with
+    // a dedicated prefix so the scheduler eval callback can match it and dump
+    // the post-RoPE / pre-cache K tensor for offline SVD analysis.
+    // Zero-cost when LEANKV_CALIBRATION_DUMP is unset (first call caches -> 0).
+    if (leankv_calib_enabled()) {
+        ggml_format_name(k_cur, "leankv_k_calib-%d", (int) il);
+    }
 
     //struct ggml_tensor * k_cache_view = ggml_view_1d(ctx, kv.k_l[il], n_tokens*n_embd_k_gqa,
     //        (ggml_row_size(kv.k_l[il]->type, n_embd_k_gqa))*kv_head);
