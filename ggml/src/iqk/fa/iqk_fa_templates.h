@@ -27,6 +27,9 @@
 
 #define GGML_COMMON_IMPL_C
 #include "ggml-common.h"
+extern "C" {
+#include "ggml-tq-runtime.h" // LeanKV 7a Stage 4a: runtime TQ codebook
+}
 
 // clang-format off
 
@@ -662,10 +665,15 @@ struct HelperTQ40 final : public BaseHelper {
     constexpr static ggml_type type = GGML_TYPE_TQ4_0;
 #ifdef __aarch64__
     using block_q8 = block_q8_0;
-    HelperTQ40(const char * data, int stride) : Base(data, stride), values(vld1q_s8(tq4_values)) {}
+    // LeanKV 7a Stage 4b: resolve layer via K-cache registry, then load that layer's LUT.
+    HelperTQ40(const char * data, int stride)
+        : Base(data, stride),
+          values(vld1q_s8(ggml_tq_get_levels_for_layer_i8(4, ggml_tq_lookup_k_cache_layer(data)))) {}
     constexpr static int block_size_q = QK8_0;
 #else
-    HelperTQ40(const char * data, int stride) : Base(data, stride) {}
+    HelperTQ40(const char * data, int stride)
+        : Base(data, stride),
+          values(_mm_loadu_si128((const __m128i *)ggml_tq_get_levels_for_layer_i8(4, ggml_tq_lookup_k_cache_layer(data)))) {}
     using block_q8 = block_q8_2;
     constexpr static int block_size_q = QK8_2;
 #endif
@@ -702,7 +710,7 @@ struct HelperTQ40 final : public BaseHelper {
     const int8x16_t values;
 #else
     const __m128i mask = _mm_set1_epi8(0xf);
-    const __m128i values = _mm_loadu_si128((const __m128i *)tq4_values);
+    const __m128i values; // initialized in constructor via per-layer LUT lookup
 #endif
 };
 
@@ -711,10 +719,14 @@ struct HelperTQ30 final : public BaseHelper {
     constexpr static ggml_type type = GGML_TYPE_TQ3_0;
 #ifdef __aarch64__
     using block_q8 = block_q8_0;
-    HelperTQ30(const char * data, int stride) : Base(data, stride), values(vld1q_s8(tq3_values)) {}
+    HelperTQ30(const char * data, int stride)
+        : Base(data, stride),
+          values(vld1q_s8(ggml_tq_get_levels_for_layer_i8(3, ggml_tq_lookup_k_cache_layer(data)))) {}
     constexpr static int block_size_q = QK8_0;
 #else
-    HelperTQ30(const char * data, int stride) : Base(data, stride) {}
+    HelperTQ30(const char * data, int stride)
+        : Base(data, stride),
+          values(_mm_loadu_si128((const __m128i *)ggml_tq_get_levels_for_layer_i8(3, ggml_tq_lookup_k_cache_layer(data)))) {}
     using block_q8 = block_q8_2;
     constexpr static int block_size_q = QK8_2;
 #endif
@@ -769,7 +781,7 @@ struct HelperTQ30 final : public BaseHelper {
     const uint8x16_t mask = vdupq_n_u8(0x7);
     const int8x16_t values;
 #else
-    const __m128i values = _mm_loadu_si128((const __m128i *)tq3_values);
+    const __m128i values; // initialized in constructor via per-layer LUT lookup
 #endif
 };
 
@@ -778,10 +790,14 @@ struct HelperTQ20 final : public BaseHelper {
     constexpr static ggml_type type = GGML_TYPE_TQ2_0;
 #ifdef __aarch64__
     using block_q8 = block_q8_0;
-    HelperTQ20(const char * data, int stride) : Base(data, stride), values(vld1q_s8(tq2_values)) {}
+    HelperTQ20(const char * data, int stride)
+        : Base(data, stride),
+          values(vld1q_s8(ggml_tq_get_levels_for_layer_i8(2, ggml_tq_lookup_k_cache_layer(data)))) {}
     constexpr static int block_size_q = QK8_0;
 #else
-    HelperTQ20(const char * data, int stride) : Base(data, stride) {}
+    HelperTQ20(const char * data, int stride)
+        : Base(data, stride),
+          values(_mm_loadu_si128((const __m128i *)ggml_tq_get_levels_for_layer_i8(2, ggml_tq_lookup_k_cache_layer(data)))) {}
     using block_q8 = block_q8_2;
     constexpr static int block_size_q = QK8_2;
 #endif
@@ -838,7 +854,7 @@ struct HelperTQ20 final : public BaseHelper {
 #ifdef __aarch64__
     const int8x16_t values;
 #else
-    const __m128i values = _mm_loadu_si128((const __m128i *)tq2_values);
+    const __m128i values; // initialized in constructor via per-layer LUT lookup
 #endif
 };
 

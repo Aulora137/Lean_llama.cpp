@@ -12,6 +12,7 @@
 #include "ggml-quants.h"
 #include "ggml-impl.h"
 #include "ggml.h"
+#include "ggml-tq-runtime.h" // LeanKV 7a Stage 4a: runtime TQ codebook (read paths)
 
 #include <assert.h>
 #include <math.h>
@@ -243,6 +244,9 @@ void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_REST
     assert(k % QK_TQ2 == 0);
     const int nb = (int)(k / QK_TQ2);
 
+    /* LeanKV 7a Stage 4a: read from runtime LUT (fitted or Gaussian default). */
+    const float * TQ2_LEVELS = ggml_tq_get_runtime_levels_f(2);
+
     for (int i = 0; i < nb; i++) {
         const float d = GGML_FP16_TO_FP32(x[i].d);
         uint8_t indices[QK_TQ2];
@@ -365,6 +369,9 @@ void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_REST
     assert(k % QK_TQ3 == 0);
     const int nb = (int)(k / QK_TQ3);
 
+    /* LeanKV 7a Stage 4a: read from runtime LUT. */
+    const float * TQ3_LEVELS = ggml_tq_get_runtime_levels_f(3);
+
     for (int i = 0; i < nb; i++) {
         const float d = ggml_fp16_to_fp32(x[i].d);
 
@@ -421,6 +428,9 @@ void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_REST
     assert(k % QK_TQ4 == 0);
     const int nb = (int)(k / QK_TQ4);
 
+    /* LeanKV 7a Stage 4a: read from runtime LUT. */
+    const float * TQ4_LEVELS = ggml_tq_get_runtime_levels_f(4);
+
     for (int i = 0; i < nb; i++) {
         const float d = ggml_fp16_to_fp32(x[i].d);
 
@@ -452,6 +462,11 @@ void ggml_vec_dot_tq3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
 
     const block_tq3_0 * GGML_RESTRICT x = (const block_tq3_0 *) vx;
     const block_q8_0  * GGML_RESTRICT y = (const block_q8_0  *) vy;
+
+    /* LeanKV 7a Stage 4a: shadow the file-scope defaults with runtime LUTs. */
+    const int8_t * TQ3_LEVELS_I8 = ggml_tq_get_runtime_levels_i8(3);
+    const float  * TQ3_LEVELS    = ggml_tq_get_runtime_levels_f (3);
+    (void)TQ3_LEVELS_I8; (void)TQ3_LEVELS;
 
     float sumf = 0.0f;
     int ib = 0;
@@ -563,6 +578,11 @@ void ggml_vec_dot_tq4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
     const block_tq4_0 * GGML_RESTRICT x = (const block_tq4_0 *) vx;
     const block_q8_0  * GGML_RESTRICT y = (const block_q8_0  *) vy;
 
+    /* LeanKV 7a Stage 4a: shadow the file-scope defaults with runtime LUTs. */
+    const int8_t * TQ4_LEVELS_I8 = ggml_tq_get_runtime_levels_i8(4);
+    const float  * TQ4_LEVELS    = ggml_tq_get_runtime_levels_f (4);
+    (void)TQ4_LEVELS_I8; (void)TQ4_LEVELS;
+
     float sumf = 0.0f;
     int ib = 0;
 
@@ -655,6 +675,11 @@ void ggml_vec_dot_tq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
 
     const block_tq2_0 * GGML_RESTRICT x = (const block_tq2_0 *) vx;
     const block_q8_0  * GGML_RESTRICT y = (const block_q8_0  *) vy;
+
+    /* LeanKV 7a Stage 4a: shadow the file-scope defaults with runtime LUTs. */
+    const int8_t * TQ2_LEVELS_I8 = ggml_tq_get_runtime_levels_i8(2);
+    const float  * TQ2_LEVELS    = ggml_tq_get_runtime_levels_f (2);
+    (void)TQ2_LEVELS_I8; (void)TQ2_LEVELS;
 
     float sumf = 0.0f;
     int ib = 0;
@@ -750,6 +775,10 @@ void dequantize_row_tq2_1(const block_tq2_1 * GGML_RESTRICT x, float * GGML_REST
     assert(k % QK_TQ2_1 == 0);
     const int nb = (int)(k / QK_TQ2_1);
 
+    /* LeanKV 7a Stage 4a: runtime LUTs for the mixed-bit dequant. */
+    const float * TQ2_LEVELS = ggml_tq_get_runtime_levels_f(2);
+    const float * TQ3_LEVELS = ggml_tq_get_runtime_levels_f(3);
+
     for (int i = 0; i < nb; i++) {
         float * out = y + i * QK_TQ2_1;
 
@@ -823,6 +852,14 @@ void ggml_vec_dot_tq2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
 
     const block_tq2_1 * GGML_RESTRICT x2 = (const block_tq2_1 *) vx;
     const block_q8_0  * GGML_RESTRICT y8 = (const block_q8_0  *) vy;
+
+    /* LeanKV 7a Stage 4a: runtime LUTs for the mixed-bit vec_dot. */
+    const int8_t * TQ2_LEVELS_I8 = ggml_tq_get_runtime_levels_i8(2);
+    const int8_t * TQ3_LEVELS_I8 = ggml_tq_get_runtime_levels_i8(3);
+    const float  * TQ2_LEVELS    = ggml_tq_get_runtime_levels_f (2);
+    const float  * TQ3_LEVELS    = ggml_tq_get_runtime_levels_f (3);
+    (void)TQ2_LEVELS_I8; (void)TQ3_LEVELS_I8;
+    (void)TQ2_LEVELS; (void)TQ3_LEVELS;
 
     const int nb = n / QK_TQ2_1;
     float sumf = 0.0f;

@@ -1518,6 +1518,8 @@ add_library(ggml
             ggml-quants.c
             ggml-quants.h
             ggml-tq.c
+            ggml-tq-runtime.c
+            ggml-tq-runtime.h
             ggml-tq-outlier.c
             ggml-tq-outlier.h
             ${GGML_SOURCES_CUDA}      ${GGML_HEADERS_CUDA}

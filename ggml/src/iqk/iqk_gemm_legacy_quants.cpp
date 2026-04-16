@@ -9,6 +9,9 @@
 
 #define GGML_COMMON_IMPL_C
 #include "ggml-common.h"
+extern "C" {
+#include "ggml-tq-runtime.h" // LeanKV 7a Stage 4a: runtime TQ codebook
+}
 
 //
 // ============================== Legacy quants
@@ -614,7 +617,7 @@ struct IQ4_NL_DequantizerS {
 // TQ4_0: Lloyd-Max 4-bit SIGNED codebook lookup via PSHUFB (like IQ4_NL_DequantizerS)
 // Uses signed path to avoid maddubs int16 saturation (codebook values up to 127 → max pair sum 32258 < 32767)
 static inline __m256i load_tq4_values_signed_256() {
-    auto val128 = _mm_loadu_si128((const __m128i *)tq4_values);
+    auto val128 = _mm_loadu_si128((const __m128i *)ggml_tq_get_runtime_levels_i8(4));
     return MM256_SET_M128I(val128, val128);
 }
 
@@ -830,7 +833,7 @@ struct TQ4_0_UnpackerS final : public Q_Unpacker<block_tq4_0, ScaleHelperTQ4_0_S
 // 3-bit packing: 8 values in 3 bytes, 4 groups per block = 32 values in 12 bytes
 // No saturation risk: max codebook value 127, max pair sum = 127*127*2 = 32258 < 32767
 static inline __m256i load_tq3_values_signed_256() {
-    auto val128 = _mm_loadu_si128((const __m128i *)tq3_values);
+    auto val128 = _mm_loadu_si128((const __m128i *)ggml_tq_get_runtime_levels_i8(3));
     return MM256_SET_M128I(val128, val128);
 }
 
@@ -871,7 +874,7 @@ struct TQ3_0_UnpackerS final : public Q_Unpacker<block_tq3_0, ScaleHelperTQ4_0_S
 // TQ2_0: Lloyd-Max 2-bit SIGNED codebook lookup via scalar unpack + PSHUFB
 // 2-bit packing: 4 values per byte, 8 bytes per block = 32 values
 static inline __m256i load_tq2_values_signed_256() {
-    auto val128 = _mm_loadu_si128((const __m128i *)tq2_values);
+    auto val128 = _mm_loadu_si128((const __m128i *)ggml_tq_get_runtime_levels_i8(2));
     return MM256_SET_M128I(val128, val128);
 }
 
@@ -2499,7 +2502,7 @@ struct DequantizerTQ4_0 final : public BaseLegacyDequantizer<block_tq4_0> {
         return vmul_f16(vld1_f16((const float16_t *)aux), inv127);
     }
     static int8x16_t load_values() {
-        return vld1q_s8(tq4_values);
+        return vld1q_s8(ggml_tq_get_runtime_levels_i8(4));
     }
     inline float block_scale(int i) const { return GGML_FP16_TO_FP32(x[i].d) / 127.0f; }
 
@@ -2553,7 +2556,7 @@ struct DequantizerTQ3_0 final : public BaseLegacyDequantizer<block_tq3_0> {
         return vmul_f16(vld1_f16((const float16_t *)aux), inv127);
     }
     static int8x16_t load_values() {
-        return vld1q_s8(tq3_values);
+        return vld1q_s8(ggml_tq_get_runtime_levels_i8(3));
     }
     inline float block_scale(int i) const { return GGML_FP16_TO_FP32(x[i].d) / 127.0f; }
 
@@ -2599,7 +2602,7 @@ struct DequantizerTQ2_0 final : public BaseLegacyDequantizer<block_tq2_0> {
         return vmul_f16(vld1_f16((const float16_t *)aux), inv127);
     }
     static int8x16_t load_values() {
-        return vld1q_s8(tq2_values);
+        return vld1q_s8(ggml_tq_get_runtime_levels_i8(2));
     }
     inline float block_scale(int i) const { return GGML_FP16_TO_FP32(x[i].d) / 127.0f; }
 
@@ -3317,7 +3320,7 @@ struct DeqTQ4_0 {
         auto bits = vld1q_u8(x.qs);
         return { vqtbl1q_s8(mt, vandq_u8(bits, ml)), vqtbl1q_s8(mt, vshrq_n_u8(bits, 4)) };
     }
-    static inline int8x16_t load_values() { return vld1q_s8(tq4_values); }
+    static inline int8x16_t load_values() { return vld1q_s8(ggml_tq_get_runtime_levels_i8(4)); }
 };
 
 struct DeqTQ3_0 {
@@ -3341,7 +3344,7 @@ struct DeqTQ3_0 {
         unpack8(x.qs + 9, indices + 24);
         return { vqtbl1q_s8(mt, vld1q_u8(indices)), vqtbl1q_s8(mt, vld1q_u8(indices + 16)) };
     }
-    static inline int8x16_t load_values() { return vld1q_s8(tq3_values); }
+    static inline int8x16_t load_values() { return vld1q_s8(ggml_tq_get_runtime_levels_i8(3)); }
 };
 
 struct DeqTQ2_0 {
@@ -3360,7 +3363,7 @@ struct DeqTQ2_0 {
         unpack32(x.qs, indices);
         return { vqtbl1q_s8(mt, vld1q_u8(indices)), vqtbl1q_s8(mt, vld1q_u8(indices + 16)) };
     }
-    static inline int8x16_t load_values() { return vld1q_s8(tq2_values); }
+    static inline int8x16_t load_values() { return vld1q_s8(ggml_tq_get_runtime_levels_i8(2)); }
 };
 
 struct DeqMXFP4 {
