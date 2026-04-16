@@ -6335,6 +6335,12 @@ struct llama_context * llama_init_from_model(
         }
     }
 
+    // LeanKV Phase 7a: if the user requested a TQ K-cache, make sure we have
+    // a fitted empirical codebook for this model in the cache. First load is
+    // slow (one short warm-up pass on an embedded corpus); subsequent loads
+    // are free. Disabled by LEANKV_CALIBRATION_AUTO=0.
+    leankv_autocalibrate(ctx);
+
     return ctx;
 }
 

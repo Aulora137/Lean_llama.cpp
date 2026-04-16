@@ -59,6 +59,11 @@ add_library(llama
             llama-delta-net.cpp
             leankv-calib.h
             leankv-calib.cpp
+            leankv-calib-corpus.h
+            leankv-codebook.h
+            leankv-codebook.cpp
+            ggml-tq-calib.h
+            ggml-tq-calib.c
             unicode.h
             unicode.cpp
             unicode-data.cpp
