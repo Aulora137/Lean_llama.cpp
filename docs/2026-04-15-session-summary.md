@@ -195,4 +195,59 @@ Meanwhile, every "clever" alternative (shrunk scale, percentile clipping) **make
 
 This confirms the theory: post-Hadamard, Q dimensions are near-i.i.d. Gaussian. When Q is i.i.d., the expected dot-product error `E[(q·e)²] = σ²_q · Σe²_i` is exactly proportional to MSE. So MSE-optimal scaling IS attention-aware scaling. There's no gap to exploit.
 
-The ChatGPT analysis was solving a problem we don't have — our Hadamard + Lloyd-Max combination already puts us at the theoretical optimum for scalar quantization. The remaining quality gap at TQ2/TQ3 is purely information-theoretic: too few bits, not wrong bits.
+This analysis gets closer to something real — let me separate the signal from the noise.
+
+### What's genuinely correct
+
+The core diagnosis is right: **we've hit the scalar quantization limit.** Our experiment proved it — Lloyd-Max + Hadamard + coordinate descent already achieves the theoretical optimum for block-scalar quantization. No codebook trick will move the needle.
+
+### What's overhyped
+
+**"Vector geometry distortion" as root cause** — this is information theory dressed in geometric language. When you go from 3.5 to 2.5 bits per element × 128 dimensions, you lose ~128 bits about the vector's direction. No correction scheme recovers destroyed information. The PPL cliff is the rate-distortion bound, not a fixable "geometry" bug.
+
+**Residual quantization (RVQ)** — quantize, compute residual, quantize again. Two TQ3 passes = 7.0 bpe. That's *worse* than just using TQ4 at 4.5 bpe with better quality. Dead end for our use case.
+
+**"Softmax ranking changes"** — sounds scary, but our experiment just showed dot-product error is proportional to MSE when Q is i.i.d. post-Hadamard. So "preserve ranking" reduces to "minimize MSE," which we already do optimally.
+
+### The one idea worth investigating
+
+**KVLinC** (the paper they cited — arxiv 2510.05373). That one is real. It combines Hadamard rotation with a learned linear correction applied after dequantization. The idea: systematic quantization bias has low-rank structure, so a small correction matrix can compensate for it without recovering the lost information — it just removes the *directional bias*.
+
+Let me check what that paper actually proposes and what the overhead looks like for us.
+
+OK, now I have the real details. Here's the honest assessment:
+
+### KVLinC — what it actually is
+
+It's **not** a simple post-dequant correction matrix. It's a **learned attention correction** with per-layer feature map adapters:
+
+- Two weight matrices W₁, W₂ ∈ ℝ^(d×128) per layer
+- Trained to minimize cross-entropy between full-precision and quantized attention distributions
+- **Training cost: ~2 hours on 4×H200 GPUs** per model
+- Adds a correction term to attention scores, not to K vectors directly
+
+### Why it's architecturally incompatible with us
+
+1. **Requires per-model GPU training** — our users run CPU inference, they don't have H200s. Our whole design philosophy is "set `-ctk tq3_0` and go"
+
+2. **Different pipeline** — KVLinC does NOT use Hadamard on keys. They use channel-wise quantization on raw K tensors, Hadamard only on V. Fundamentally different from our Hadamard-K + Lloyd-Max approach
+
+3. **Adds learned parameters** — breaks our universal codebook model. Every model needs its own trained adapter weights
+
+4. **Their 2-bit result (7.1 PPL)** is on a different quantization scheme (channel-wise, group=128), not comparable to our TQ block structure
+
+### Where this leaves us
+
+The ChatGPT suggestions boil down to: "add learned corrections" — which is valid research but requires training infrastructure we don't have and our users don't have.
+
+Here's the honest picture of our tier stack:
+
+| Tier | Type | PPL delta | Status |
+|------|------|-----------|--------|
+| Default | TQ4_0 (4.5 bpe) | +0.03 | Near-lossless, ship it |
+| Cold | TQ3_0 (3.5 bpe) | +2.8 | Solid for old context |
+| Emergency | TQ2_1 (2.5 bpe) | +24 | Per-model only |
+
+TQ4 and TQ3 are already at the scalar quantization optimum — we proved that yesterday. Closing the TQ2 gap requires either more bits (which defeats the purpose) or learned corrections (which requires GPU training infrastructure).
+
+I think the practical move is: **ship TQ4+TQ3 as the production tier stack and stop chasing TQ2**. The compression ratios are already excellent — TQ4 gives 3.6× compression vs F16, TQ3 gives 4.6×. That's the real win. What do you think?
