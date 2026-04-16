@@ -7,10 +7,17 @@
 #include "leankv-calib.h"
 
 #include "ggml.h"
+#include "ggml-quants.h"
 
 #include <unordered_set>
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
+#include <cmath>
+
+extern "C" {
+#include "ggml-tq-runtime.h"
+}
 
 /* LeanKV: channel permutation custom op for outlier treatment.
  * Reorders elements along dimension 0 (head_dim) according to a permutation table.
@@ -39,6 +46,179 @@ static void tq_channel_perm_op(
             yr[d] = xr[pd->perm[d]];
         }
     }
+}
+
+/* LeanKV: mixed-precision quantization noise simulation (LEANKV_MIXED_SIM=1).
+ *
+ * Applies TQ3 quant+dequant to the first n_outlier channels of each head,
+ * and TQ2 quant+dequant to the remaining channels. This injects the exact
+ * quantization noise that a real mixed TQ3+TQ2 cache would produce, letting
+ * us measure PPL without modifying the FA kernel.
+ *
+ * Used with:  -ctk f16 -khad   (F16 cache + manual Hadamard enable)
+ * Gate:       LEANKV_MIXED_SIM=1 env var
+ *
+ * Post-Hadamard all channels are ~equal, so which channels get TQ3 vs TQ2
+ * doesn't matter — the first 25% is as good as any (no permutation needed). */
+struct tq_mixed_noise_config {
+    int head_dim;       // e.g. 128
+    int n_outlier;      // e.g. 32 (must be multiple of 32 for TQ block alignment)
+    int mode;           // 0 = mixed (TQ3 outlier + TQ2 normal), 1 = TQ3-only, 2 = TQ2-only
+};
+
+static void tq_mixed_noise_op(
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * src,
+        int ith, int nth, void * userdata) {
+    GGML_UNUSED(ith); GGML_UNUSED(nth);
+
+    const auto * cfg = (const tq_mixed_noise_config *)userdata;
+    const int hd       = cfg->head_dim;
+    const int mode     = cfg->mode;
+
+    const float * x = (const float *)src->data;
+    float * y       = (float *)dst->data;
+    const int64_t total = ggml_nelements(src);
+    const int64_t n_rows = total / hd;
+
+    // Copy src to dst first (we modify in-place on dst)
+    memcpy(y, x, total * sizeof(float));
+
+    static int dbg_count = 0;
+
+    for (int64_t r = 0; r < n_rows; r++) {
+        float * row = y + r * hd;
+
+        if (mode == 9) {
+            // Identity: do nothing (pure memcpy was already done)
+        } else if (mode == 8) {
+            // Tiny fixed noise: add 0.001 to every value
+            for (int j = 0; j < hd; j++) {
+                row[j] += 0.001f;
+            }
+        } else if (mode == 7) {
+            // 10% multiplicative noise
+            for (int j = 0; j < hd; j++) {
+                row[j] *= 1.10f;
+            }
+        } else if (mode == 6) {
+            // 50% multiplicative noise
+            for (int j = 0; j < hd; j++) {
+                row[j] *= 1.50f;
+            }
+        } else if (mode == 1) {
+            // TQ3-only: quantize ALL channels as TQ3
+            const int nb = hd / QK_TQ3;
+            for (int b = 0; b < nb; b++) {
+                float * blk_data = row + b * QK_TQ3;
+                block_tq3_0 blk;
+                quantize_row_tq3_0_ref(blk_data, &blk, QK_TQ3);
+                dequantize_row_tq3_0(&blk, blk_data, QK_TQ3);
+            }
+        } else if (mode == 2) {
+            // TQ2-only: quantize ALL channels as TQ2
+            const int nb = hd / QK_TQ2;
+            for (int b = 0; b < nb; b++) {
+                float * blk_data = row + b * QK_TQ2;
+                block_tq2_0 blk;
+                quantize_row_tq2_0_ref(blk_data, &blk, QK_TQ2);
+                dequantize_row_tq2_0(&blk, blk_data, QK_TQ2);
+            }
+        } else {
+            // Mixed: outlier channels TQ3, normal channels TQ2
+            const int n_out  = cfg->n_outlier;
+            const int n_norm = hd - n_out;
+            if (n_out > 0) {
+                const int nb3 = n_out / QK_TQ3;
+                for (int b = 0; b < nb3; b++) {
+                    float * blk_data = row + b * QK_TQ3;
+                    block_tq3_0 blk;
+                    quantize_row_tq3_0_ref(blk_data, &blk, QK_TQ3);
+                    dequantize_row_tq3_0(&blk, blk_data, QK_TQ3);
+                }
+            }
+            if (n_norm > 0) {
+                const int nb2 = n_norm / QK_TQ2;
+                for (int b = 0; b < nb2; b++) {
+                    float * blk_data = row + n_out + b * QK_TQ2;
+                    block_tq2_0 blk;
+                    quantize_row_tq2_0_ref(blk_data, &blk, QK_TQ2);
+                    dequantize_row_tq2_0(&blk, blk_data, QK_TQ2);
+                }
+            }
+        }
+
+    }
+
+    // Compact diagnostics (first invocation only)
+    if (dbg_count < 1 && mode != 9 && mode != 8 && mode != 7 && mode != 6) {
+        float total_sig2 = 0, total_err2 = 0;
+        for (int64_t r2 = 0; r2 < n_rows; r2++) {
+            const float * o = x + r2 * hd;
+            const float * n2 = y + r2 * hd;
+            for (int d2 = 0; d2 < hd; d2++) {
+                total_sig2 += o[d2] * o[d2];
+                float e = n2[d2] - o[d2];
+                total_err2 += e * e;
+            }
+        }
+        float snr = (total_err2 > 0) ? 10.0f * log10f(total_sig2 / total_err2) : 999.0f;
+        float rms_pct = 100.0f * sqrtf(total_err2 / (total_sig2 + 1e-30f));
+        fprintf(stderr, "leankv-sim: mode=%d n_rows=%lld SNR=%.1f dB RMS_err=%.1f%%\n",
+                mode, (long long)n_rows, snr, rms_pct);
+        dbg_count++;
+    }
+}
+
+// Global config for the mixed noise op (lives for process lifetime).
+static tq_mixed_noise_config g_mixed_noise_cfg;
+static bool g_mixed_noise_enabled = false;
+static bool g_mixed_noise_checked = false;
+
+static bool leankv_mixed_sim_enabled(int head_dim) {
+    if (!g_mixed_noise_checked) {
+        const char * env = std::getenv("LEANKV_MIXED_SIM");
+        g_mixed_noise_enabled = (env && env[0] != '0' && env != nullptr);
+        if (g_mixed_noise_enabled) {
+            g_mixed_noise_cfg.head_dim = head_dim;
+            // Mode: =1 (mixed), =3 (TQ3-only), =2 (TQ2-only), =9 (identity/passthrough)
+            int mode_val = env[0] - '0';
+            if (mode_val == 9) {
+                g_mixed_noise_cfg.mode = 9;  // Identity
+                g_mixed_noise_cfg.n_outlier = 0;
+                fprintf(stderr, "leankv-mixed-sim: IDENTITY mode (passthrough, no noise)\n");
+            } else if (mode_val == 8) {
+                g_mixed_noise_cfg.mode = 8;  // Tiny fixed noise (+0.001)
+                g_mixed_noise_cfg.n_outlier = 0;
+                fprintf(stderr, "leankv-mixed-sim: TINY fixed noise (+0.001 per value)\n");
+            } else if (mode_val == 7) {
+                g_mixed_noise_cfg.mode = 7;  // 10% multiplicative noise
+                g_mixed_noise_cfg.n_outlier = 0;
+                fprintf(stderr, "leankv-mixed-sim: 10%% multiplicative noise (* 1.10)\n");
+            } else if (mode_val == 6) {
+                g_mixed_noise_cfg.mode = 6;  // 50% multiplicative noise
+                g_mixed_noise_cfg.n_outlier = 0;
+                fprintf(stderr, "leankv-mixed-sim: 50%% multiplicative noise (* 1.50)\n");
+            } else if (mode_val == 3) {
+                g_mixed_noise_cfg.mode = 1;  // TQ3-only
+                g_mixed_noise_cfg.n_outlier = 0;
+                fprintf(stderr, "leankv-mixed-sim: TQ3-only noise on all %d channels (3.5 bpe)\n", head_dim);
+            } else if (mode_val == 2) {
+                g_mixed_noise_cfg.mode = 2;  // TQ2-only
+                g_mixed_noise_cfg.n_outlier = 0;
+                fprintf(stderr, "leankv-mixed-sim: TQ2-only noise on all %d channels (2.5 bpe)\n", head_dim);
+            } else {
+                g_mixed_noise_cfg.mode = 0;  // Mixed
+                g_mixed_noise_cfg.n_outlier = ((head_dim / 4) / 32) * 32;
+                if (g_mixed_noise_cfg.n_outlier == 0) g_mixed_noise_cfg.n_outlier = 32;
+                fprintf(stderr, "leankv-mixed-sim: mixed TQ3(%d ch) + TQ2(%d ch) noise (%.2f bpe)\n",
+                        g_mixed_noise_cfg.n_outlier, head_dim - g_mixed_noise_cfg.n_outlier,
+                        (g_mixed_noise_cfg.n_outlier * 3.5f + (head_dim - g_mixed_noise_cfg.n_outlier) * 2.5f) / head_dim);
+            }
+        }
+        g_mixed_noise_checked = true;
+    }
+    return g_mixed_noise_enabled;
 }
 
 uint32_t llm_build_context::llama_kv_qnext_state_slots(const llama_kv_cache & kv_self) {
@@ -597,9 +777,10 @@ void llm_build_context::llm_build_kv_store(
 
     // LeanKV Phase 7: when K-vector calibration is active, rename k_cur with
     // a dedicated prefix so the scheduler eval callback can match it and dump
-    // the post-RoPE / pre-cache K tensor for offline SVD analysis.
-    // Zero-cost when LEANKV_CALIBRATION_DUMP is unset (first call caches -> 0).
-    if (leankv_calib_enabled()) {
+    // the post-RoPE / pre-cache K tensor for offline SVD analysis *or* feed
+    // the in-memory auto-calibration hook (Phase 7a first-load codebook fit).
+    // Zero-cost on the hot path: both gates are env-var-cached booleans.
+    if (leankv_calib_capture_required()) {
         ggml_format_name(k_cur, "leankv_k_calib-%d", (int) il);
     }
 
@@ -1802,6 +1983,14 @@ ggml_tensor * llm_build_context::llm_build_kv(
         k_cur = ggml_map_custom1(ctx, k_cur, tq_channel_perm_op, 1, (void *)pd);
         cb(q_cur, "Qcur_perm", il);
         cb(k_cur, "Kcur_perm", il);
+    }
+
+    // LeanKV: mixed-precision noise simulation (LEANKV_MIXED_SIM=1).
+    // Injects TQ3+TQ2 quantization noise into K after Hadamard rotation.
+    // Used with -ctk f16 -khad to measure mixed-precision quality without FA changes.
+    if (leankv_mixed_sim_enabled(hparams.n_embd_head_k)) {
+        k_cur = ggml_map_custom1(ctx, k_cur, tq_mixed_noise_op, 1, (void *)&g_mixed_noise_cfg);
+        cb(k_cur, "Kcur_mixed_noise", il);
     }
 
     // these nodes are added to the graph together so that they are not reordered

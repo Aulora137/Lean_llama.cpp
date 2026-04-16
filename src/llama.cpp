@@ -5516,8 +5516,15 @@ struct llama_context * llama_init_from_model(
     }
 
     if (params.k_cache_hadamard && !ggml_is_quantized(params.type_k)) {
-        LLAMA_LOG_WARN("%s: there is no point in Hadamard transforms with not quantized K-cache. Turning K-cache Hadamard off\n", __func__);
-        params.k_cache_hadamard = false;
+        // LeanKV: allow Hadamard with F16 cache when noise simulation is active
+        // (LEANKV_MIXED_SIM injects TQ quant noise into post-Hadamard F16 K data)
+        const char * mixed_sim = getenv("LEANKV_MIXED_SIM");
+        if (mixed_sim && mixed_sim[0] != '0') {
+            LLAMA_LOG_WARN("%s: keeping K-cache Hadamard for noise simulation (LEANKV_MIXED_SIM=%s)\n", __func__, mixed_sim);
+        } else {
+            LLAMA_LOG_WARN("%s: there is no point in Hadamard transforms with not quantized K-cache. Turning K-cache Hadamard off\n", __func__);
+            params.k_cache_hadamard = false;
+        }
     }
 
     if (params.v_cache_hadamard && !ggml_is_quantized(params.type_v)) {
