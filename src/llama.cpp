@@ -31,6 +31,9 @@
 
 // LeanKV: outlier channel treatment for mixed-precision KV cache
 #include "ggml-tq-outlier.h"
+extern "C" {
+#include "ggml-tq-runtime.h" // LeanKV 7a Stage 4b: K-cache range registry
+}
 
 // LeanKV Phase 7: K-vector calibration dump (env-gated, zero-cost when off)
 #include "leankv-calib.h"
@@ -1053,6 +1056,31 @@ static bool llama_kv_cache_init(
         }
     }
 #endif
+
+    // ── LeanKV Phase 7a Stage 4b: register K-cache ranges ────────────────
+    //
+    // After backend allocation, each layer's K tensor has a stable data
+    // pointer. Register the [data, data+nbytes) range so the FA helper
+    // (iqk_fa_templates.h HelperTQ{N}0) can resolve a raw row pointer back
+    // to its owning layer and pick up per-layer LUT overrides.
+    //
+    // Only register layers whose type_k_l is actually TQ-quantized. Skip
+    // split_cache — multi-device data layouts are not yet supported by
+    // the range registry.
+    ggml_tq_clear_k_cache_ranges();
+    if (!split_cache) {
+        for (int il = 0; il < (int) n_layer; ++il) {
+            if (il >= (int) cache.k_l.size())    continue;
+            struct ggml_tensor * kt = cache.k_l[il];
+            if (!kt || !kt->data)                continue;
+            const ggml_type t = kt->type;
+            const bool is_tq = (t == GGML_TYPE_TQ2_0) ||
+                               (t == GGML_TYPE_TQ3_0) ||
+                               (t == GGML_TYPE_TQ4_0);
+            if (!is_tq) continue;
+            ggml_tq_register_k_cache_range(il, kt->data, ggml_nbytes(kt));
+        }
+    }
 
     return true;
 }
