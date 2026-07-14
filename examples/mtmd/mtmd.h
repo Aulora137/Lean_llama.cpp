@@ -13,6 +13,8 @@
 #include <vector>
 #include <cinttypes>
 #include <memory>
+#include <nlohmann/json.hpp>
+using json = nlohmann::ordered_json;
 #endif
 
 /**
@@ -168,6 +170,9 @@ MTMD_API llama_pos                  mtmd_input_chunk_get_n_pos       (const mtmd
 MTMD_API mtmd_input_chunk * mtmd_input_chunk_copy(const mtmd_input_chunk * chunk);
 MTMD_API void               mtmd_input_chunk_free(mtmd_input_chunk * chunk);
 
+// Free the raw audio (PCM) or imagebuffers (RGB-f32 (!)) of a multimedia chunk.
+// Provided for the benefit of llama-server as a stopgap to fix memory issues
+MTMD_API void               mtmd_input_chunk_free_raw_data(mtmd_input_chunk * chunk);
 
 // mtmd_image_tokens
 //
@@ -215,6 +220,9 @@ MTMD_API int32_t mtmd_encode_chunk(mtmd_context * ctx,
 // the reading size (in bytes) is equal to:
 // llama_model_n_embd(model) * mtmd_input_chunk_get_n_tokens(chunk) * sizeof(float)
 MTMD_API float * mtmd_get_output_embd(mtmd_context * ctx);
+MTMD_API mtmd_input_chunk * mtmd_create_input_chunk(void);
+MTMD_API mtmd_input_chunk * mtmd_input_chunk_from_json(json & j);
+MTMD_API void mtmd_input_chunk_to_json(mtmd_input_chunk * chunk, json & j);
 
 /////////////////////////////////////////
 

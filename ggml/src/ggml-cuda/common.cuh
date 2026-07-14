@@ -767,7 +767,8 @@ struct ggml_cuda_device_info {
 
     std::array<float, GGML_CUDA_MAX_DEVICES> default_tensor_split = {};
 
-    ggml_backend_cuda_context * all_ctx[GGML_CUDA_MAX_DEVICES] = { nullptr };
+    std::unordered_map<const void *, std::array<ggml_backend_cuda_context *, GGML_CUDA_MAX_DEVICES>> all_ctx;
+    //ggml_backend_cuda_context * all_ctx[GGML_CUDA_MAX_DEVICES] = { nullptr };
 #ifdef GGML_USE_NCCL
     ncclComm_t nccl_coms[GGML_CUDA_MAX_DEVICES];
     bool have_nccl;
@@ -857,6 +858,7 @@ struct ggml_backend_cuda_context {
 
     int   fusion = GGML_CUDA_FUSION;
     int   offload_batch_size = GGML_CUDA_MIN_BATCH_OFFLOAD;
+    int   offload_batch_size_per_byte = -1;
     int   mmq_id_thresh = 32;
     float fa_offset = 0.6931f; // ln(2)
 #ifdef USE_CUDA_GRAPH
@@ -868,10 +870,11 @@ struct ggml_backend_cuda_context {
 
 #endif
 
+    const void * model;
     void * copy_buffer = nullptr;
     size_t copy_size   = 0;
 
-    explicit ggml_backend_cuda_context(int device);
+    explicit ggml_backend_cuda_context(int device, const void * model);
 
     ~ggml_backend_cuda_context();
 

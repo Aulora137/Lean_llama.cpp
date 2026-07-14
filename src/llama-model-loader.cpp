@@ -3,6 +3,7 @@
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "ggml.h"
+#include <memory>
 //#include "ggml-backend.h"
 
 #ifdef GGML_USE_CUDA
@@ -11,8 +12,6 @@
 #  include "ggml-vulkan.h"
 #elif defined(GGML_USE_SYCL)
 #  include "ggml-sycl.h"
-#elif defined(GGML_USE_KOMPUTE)
-#   include "ggml-kompute.h"
 #elif defined(GGML_USE_CANN)
 #   include "ggml-cann.h"
 #endif
@@ -20,9 +19,14 @@
 #include <set>
 #include <map>
 #include <array>
+#include <charconv>
 #include <future>
 #include <regex>
 #include <algorithm>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <cstring>
 
 #if defined(_WIN32)
     #define WIN32_LEAN_AND_MEAN
@@ -204,8 +208,100 @@ namespace GGUFMeta {
     };
 }
 
+static bool parse_tensor_layer_index(const std::string & name, uint32_t & layer) {
+    if (name.rfind("blk.", 0) != 0) {
+        return false;
+    }
+
+    const char * first = name.data() + 4;
+    const char * last  = first;
+    const char * end   = name.data() + name.size();
+
+    while (last < end && *last != '.') {
+        ++last;
+    }
+
+    if (last == first || last == end) {
+        return false;
+    }
+
+    auto result = std::from_chars(first, last, layer);
+    return result.ec == std::errc() && result.ptr == last;
+}
+
+static bool is_split_expert_tensor(const std::string & name, uint32_t & expert) {
+    static const char * prefixes[] = { "ffn_gate.", "ffn_down.", "ffn_up." };
+
+    const size_t layer_end = name.find('.', 4);
+    if (layer_end == std::string::npos) {
+        return false;
+    }
+
+    const size_t prefix_begin = layer_end + 1;
+
+    for (const char * prefix : prefixes) {
+        const size_t prefix_len = std::char_traits<char>::length(prefix);
+        if (name.compare(prefix_begin, prefix_len, prefix) != 0) {
+            continue;
+        }
+
+        const size_t expert_begin = prefix_begin + prefix_len;
+        const size_t expert_end = name.find('.', expert_begin);
+        if (expert_end == std::string::npos || expert_end == expert_begin) {
+            continue;
+        }
+
+        auto result = std::from_chars(name.data() + expert_begin, name.data() + expert_end, expert);
+        if (result.ec == std::errc() && result.ptr == name.data() + expert_end) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool is_merged_expert_tensor(llm_tensor tensor_type) {
+    switch (tensor_type) {
+        case LLM_TENSOR_FFN_NORM_EXPS:
+        case LLM_TENSOR_FFN_DOWN_EXPS:
+        case LLM_TENSOR_FFN_GATE_EXPS:
+        case LLM_TENSOR_FFN_UP_EXPS:
+        case LLM_TENSOR_FFN_GATE_UP_EXPS:
+        case LLM_TENSOR_FFN_EXP_PROBS_B:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void coalesce_ranges(std::vector<llama_file_range> & ranges) {
+    ranges.erase(std::remove_if(ranges.begin(), ranges.end(), [](const llama_file_range & range) {
+        return range.empty();
+    }), ranges.end());
+
+    std::sort(ranges.begin(), ranges.end(), [](const llama_file_range & lhs, const llama_file_range & rhs) {
+        if (lhs.first != rhs.first) {
+            return lhs.first < rhs.first;
+        }
+        return lhs.last < rhs.last;
+    });
+
+    std::vector<llama_file_range> merged;
+    merged.reserve(ranges.size());
+
+    for (const auto & range : ranges) {
+        if (merged.empty() || range.first > merged.back().last) {
+            merged.push_back(range);
+            continue;
+        }
+        merged.back().last = std::max(merged.back().last, range.last);
+    }
+
+    ranges = std::move(merged);
+}
+
 llama_model_loader::llama_model_loader(const std::string & fname, int ncmoe, bool use_mmap, bool check_tensors,
-        bool repack_tensors, bool use_thp, bool merge_qkv, bool merge_up_gate_exps,
+        bool repack_tensors, bool use_thp, bool merge_qkv, bool merge_up_gate_exps, bool defer_experts,
         const llama_model_kv_override * param_overrides_p,
         const llama_model_tensor_buft_override * param_tensor_buft_overrides_p) {
     int trace = 0;
@@ -500,6 +596,7 @@ llama_model_loader::llama_model_loader(const std::string & fname, int ncmoe, boo
     this->use_thp = use_thp;
     this->merge_qkv = merge_qkv;
     this->merge_up_gate_exps = merge_up_gate_exps;
+    this->defer_experts = defer_experts;
 }
 
 llama_model_loader::~llama_model_loader() {
@@ -508,6 +605,74 @@ llama_model_loader::~llama_model_loader() {
     }
     for (auto * ctx : contexts) {
         ggml_free(ctx);
+    }
+}
+
+void llama_model_loader::build_expert_tensor_index(const llama_hparams & hparams) {
+    expert_tensor_index = {};
+
+    if (hparams.n_expert == 0 || hparams.n_layer == 0) {
+        return;
+    }
+
+    expert_tensor_index.file_ranges.resize(files.size());
+
+    size_t deferred_bytes = 0;
+    const llm_arch arch = get_arch();
+
+    for (const auto & weight : weights) {
+        const std::string name(weight.tensor->name);
+        uint32_t layer = 0;
+        if (!parse_tensor_layer_index(name, layer)) {
+            continue;
+        }
+
+        if (layer >= hparams.n_layer) {
+            throw std::runtime_error(format("expert tensor '%s' has invalid layer index %u", name.c_str(), layer));
+        }
+
+        // check for split expert tensors (blk.N.ffn_gate.E.weight) by name pattern,
+        // since llm_tensor_type can't resolve these (two %d in the format string)
+        uint32_t expert = 0;
+        if (is_split_expert_tensor(name, expert)) {
+            if (expert >= hparams.n_expert) {
+                throw std::runtime_error(format("expert tensor '%s' has invalid expert index %u", name.c_str(), expert));
+            }
+        } else {
+            const llm_tensor tensor_type = llm_tensor_type(arch, name, int(layer));
+            if (!is_merged_expert_tensor(tensor_type)) {
+                continue;
+            }
+        }
+
+        const size_t tensor_bytes = ggml_nbytes(weight.tensor);
+        deferred_bytes += tensor_bytes;
+        expert_tensor_index.file_ranges.at(weight.idx).push_back({ weight.offs, weight.offs + tensor_bytes });
+    }
+
+    for (auto & ranges : expert_tensor_index.file_ranges) {
+        coalesce_ranges(ranges);
+    }
+
+    expert_tensor_index.deferred_bytes = deferred_bytes;
+    expert_tensor_index.dense_bytes = n_bytes > deferred_bytes ? n_bytes - deferred_bytes : 0;
+}
+
+bool llama_model_loader::should_defer_expert_mmaps() const {
+    return defer_experts && use_mmap && !expert_tensor_index.empty();
+}
+
+void llama_model_loader::drop_mmap_expert_pages() const {
+    if (!use_mmap || mappings.empty() || expert_tensor_index.file_ranges.empty()) {
+        return;
+    }
+
+    const size_t n_range_sets = std::min(mappings.size(), expert_tensor_index.file_ranges.size());
+    for (size_t idx = 0; idx < n_range_sets; ++idx) {
+        const auto & ranges = expert_tensor_index.file_ranges[idx];
+        for (const auto & range : ranges) {
+            mappings[idx]->dontneed_fragment(range.first, range.last);
+        }
     }
 }
 
@@ -562,8 +727,8 @@ bool llama_model_loader::get_arr(const std::string & key, std::vector<T> & resul
 
     result.resize(arr_info.length);
     if (arr_info.gt == GGUF_TYPE_BOOL) {
-        std::transform((const bool *)arr_info.data, (const bool *)arr_info.data + arr_info.length, result.begin(),
-                [] (bool x) { return static_cast<T>(x); });
+        std::transform((const int8_t *)arr_info.data, (const int8_t *)arr_info.data + arr_info.length, result.begin(),
+                [] (int8_t x) { return static_cast<T>(x != 0); });
 
     } else {
         result.assign((const T*)arr_info.data, (const T *)arr_info.data + arr_info.length);
@@ -600,8 +765,8 @@ bool llama_model_loader::get_arr(const std::string & key, std::array<T, N_MAX> &
     }
 
     if (arr_info.gt == GGUF_TYPE_BOOL) {
-        std::transform((const bool *)arr_info.data, (const bool *)arr_info.data + arr_info.length, result.begin(),
-                [] (bool x) { return static_cast<T>(x); });
+        std::transform((const int8_t *)arr_info.data, (const int8_t *)arr_info.data + arr_info.length, result.begin(),
+                [] (int8_t x) { return static_cast<T>(x != 0); });
     } else {
         std::copy((const T*)arr_info.data, (const T *)arr_info.data + arr_info.length, result.begin());
     }
@@ -891,25 +1056,31 @@ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
 // Returns false if cancelled by progress_callback
 bool llama_model_loader::load_all_data(
             struct ggml_context * ctx,
+            [[maybe_unused]] llama_model * model,
             llama_buf_map & bufs_mmap,
             llama_mlocks * lmlocks,
             llama_progress_callback progress_callback,
             void * progress_callback_user_data) {
     GGML_ASSERT(size_data != 0 && "call init_mappings() first");
 
-    std::vector<no_init<uint8_t>> read_buf;
     std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
 
+    // Number of worker threads for cuda and host tensor loading.
+    const int n_workers = 8;
+
+    std::vector<std::vector<no_init<uint8_t>>> read_bufs(n_workers);
+
 #if defined(GGML_USE_CUDA)
-    // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
-    // NVMe raid configurations might require more / larger buffers.
-    constexpr size_t n_buffers = 4;
-    constexpr size_t buffer_size = 1 * 1024 * 1024; // 1MB
+    // One pinned staging buffer per worker for async uploads
+    constexpr size_t buffer_size = 16 * 1024 * 1024; // 16MB
 
     std::vector<ggml_backend_buffer_t> host_buffers;
     std::vector<void*> host_ptrs;
     std::vector<ggml_backend_event_t> events;
-    size_t buffer_idx = 0; // buffer to use for async loads
+
+#if !defined(_WIN32)
+    std::vector<std::unique_ptr<llama_mmap>> split_mappings(files.size());
+#endif
 
     ggml_backend_t cuda_backend = nullptr;
     if (!use_mmap && !check_tensors) {
@@ -921,7 +1092,7 @@ bool llama_model_loader::load_all_data(
             for (int i = 0; i < ggml_backend_cuda_get_device_count(); ++i) {
                 auto * cuda_buffer_type = ggml_backend_cuda_buffer_type(i);
                 if (buffer_type == cuda_buffer_type) {
-                    cuda_backend = ggml_backend_cuda_init(i, nullptr);
+                    cuda_backend = ggml_backend_cuda_init(i, nullptr, model);
                     break;
                 }
             }
@@ -929,31 +1100,39 @@ bool llama_model_loader::load_all_data(
 
         // If the cuda backend is active create pinned memory buffers and events for synchronisation.
         if (cuda_backend) {
-            for (size_t idx = 0; idx < n_buffers; ++idx) {
+            for (size_t idx = 0; idx < (size_t)n_workers; ++idx) {
                 host_buffers.emplace_back(ggml_backend_buft_alloc_buffer(llama_default_buffer_type_cpu(true), buffer_size));
                 host_ptrs.emplace_back(ggml_backend_buffer_get_base(host_buffers[idx]));
                 events.emplace_back(ggml_backend_event_new(cuda_backend));
             }
+            // Force creation of the upload stream now
+            ggml_backend_event_record(events[0]);
+            ggml_backend_event_synchronize(events[0]);
         }
     }
 #endif
 
-    for (struct ggml_tensor * cur = ggml_get_first_tensor(ctx); cur != NULL; cur = ggml_get_next_tensor(ctx, cur)) {
+
+    // Tensors are loaded in a threadpool. A lot of the ops are serialized
+    // and this is the mutex we use.
+    std::mutex load_mutex;
+
+    // Load model weights into a backing buffer:
+    // * mmap:               host page cache        Serial
+    // * host:               system ram             Parallel
+    // * cuda:               GPU                    Parallel
+    // * --split-mode graph: GPU                    Parallel
+    // * rest:               All other backends,    Serial
+    auto load_tensor = [&](ggml_tensor * cur, int thread_idx) -> size_t {
         const auto * weight = get_weight(ggml_get_name(cur));
-        if (weight == nullptr) {
-            // this can happen with split experts models
-            continue;
-        }
+        GGML_ASSERT(weight != nullptr);
+        GGML_ASSERT(weight->idx < files.size());
+        const size_t n_size = ggml_nbytes(cur);
+        const auto file = files.at(weight->idx)->clone();
 
-        if (progress_callback) {
-            if (!progress_callback((float) size_done / size_data, progress_callback_user_data)) {
-                return false;
-            }
-        }
-
-        size_t n_size = ggml_nbytes(cur);
-
+        // mmap. Serialized.
         if (use_mmap) {
+            std::lock_guard<std::mutex> lock(load_mutex);
             const auto & mapping = mappings.at(weight->idx);
             ggml_backend_buffer_t buf_mmap = nullptr;
             if (bufs_mmap.count(weight->idx)) {
@@ -981,59 +1160,171 @@ bool llama_model_loader::load_all_data(
             } else {
                 ggml_backend_tensor_set(cur, data, 0, n_size);
             }
-        } else {
-            GGML_ASSERT(weight->idx < files.size());
-            const auto & file = files.at(weight->idx);
-            if (ggml_backend_buffer_is_host(cur->buffer)) {
-                file->seek(weight->offs, SEEK_SET);
-                file->read_raw(cur->data, n_size);
-                if (check_tensors) {
-                    validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
-                                return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
-                                }));
-                }
-            } else {
-#if defined(GGML_USE_CUDA)
-                // If cuda_backend is valid load the tensor in chunks to pinned memory and upload the buffers asynchronously to the GPU.
-                if (cuda_backend) {
-                    file->seek(weight->offs, SEEK_SET);
-
-                    size_t bytes_read = 0;
-
-                    while (bytes_read < n_size) {
-                        size_t read_iteration = std::min<size_t>(buffer_size, n_size - bytes_read);
-
-                        ggml_backend_event_synchronize(events[buffer_idx]);
-                        file->read_raw(host_ptrs[buffer_idx], read_iteration);
-                        ggml_backend_tensor_set_async(cuda_backend, cur, host_ptrs[buffer_idx], bytes_read, read_iteration);
-                        ggml_backend_event_record(events[buffer_idx]);
-
-                        bytes_read += read_iteration;
-                        ++buffer_idx;
-                        buffer_idx %= n_buffers;
-                    }
-                }
-                else
-#endif
-                {
-                    read_buf.resize(n_size);
-                    file->seek(weight->offs, SEEK_SET);
-                    file->read_raw(read_buf.data(), n_size);
-                    ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);
-                    if (check_tensors && !ggml_validate_row_data(cur->type, read_buf.data(), n_size)) {
-                        throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
-                    }
-                }
-            }
+            return n_size;
         }
 
-        size_done += n_size;
+        // host. Parallel.
+        if (ggml_backend_buffer_is_host(cur->buffer)) {
+            file->seek(weight->offs, SEEK_SET);
+            file->read_raw(cur->data, n_size);
+            if (check_tensors) {
+                std::lock_guard<std::mutex> lock(load_mutex);
+                validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
+                            return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
+                            }));
+            }
+            return n_size;
+        }
+
+        // cuda. Parallel
+#if defined(GGML_USE_CUDA)
+        // If cuda_backend is valid load the tensor in chunks to pinned memory and upload the buffers asynchronously to the GPU.
+        if (cuda_backend) {
+            file->seek(weight->offs, SEEK_SET);
+
+            size_t bytes_read = 0;
+
+            while (bytes_read < n_size) {
+                size_t read_iteration = std::min<size_t>(buffer_size, n_size - bytes_read);
+
+                ggml_backend_event_synchronize(events[thread_idx]);
+                file->read_raw(host_ptrs[thread_idx], read_iteration);
+                ggml_backend_tensor_set_async(cuda_backend, cur, host_ptrs[thread_idx], bytes_read, read_iteration);
+                ggml_backend_event_record(events[thread_idx]);
+
+                bytes_read += read_iteration;
+            }
+            return n_size;
+        }
+
+        // --split-mode graph. Parallel
+        const char * buffer_name = ggml_backend_buffer_name(cur->buffer);
+        const bool   is_probably_split_mode_graph = std::strncmp(buffer_name, GGML_CUDA_NAME, strlen(GGML_CUDA_NAME)) == 0;
+        if (is_probably_split_mode_graph) {
+#if !defined(_WIN32)
+            llama_mmap * mapping;
+            {
+                std::lock_guard<std::mutex> lock(load_mutex);
+                auto & m = split_mappings[weight->idx];
+                if (!m) {
+                    m.reset(new llama_mmap(files.at(weight->idx).get(), 0, ggml_is_numa()));
+                }
+                mapping = m.get();
+            }
+            uint8_t * data = (uint8_t *) mapping->addr() + weight->offs;
+            ggml_backend_tensor_set(cur, data, 0, n_size);
+            if (check_tensors && !ggml_validate_row_data(cur->type, data, n_size)) {
+                throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
+            }
+            mapping->dontneed_fragment(weight->offs, weight->offs + n_size);
+            return n_size;
+#else
+            auto & read_buf = read_bufs[thread_idx];
+            if (read_buf.capacity() > n_size) {
+                read_buf = std::vector<no_init<uint8_t>>();
+            }
+            read_buf.resize(n_size);
+            file->seek(weight->offs, SEEK_SET);
+            file->read_raw(read_buf.data(), n_size);
+            ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);
+            if (check_tensors && !ggml_validate_row_data(cur->type, read_buf.data(), n_size)) {
+                throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
+            }
+            return n_size;
+#endif
+        }
+#endif
+        // rest. Serialized.
+        {
+            std::lock_guard<std::mutex> lock(load_mutex);
+            auto & read_buf = read_bufs[thread_idx];
+            read_buf.resize(n_size);
+            file->seek(weight->offs, SEEK_SET);
+            file->read_raw(read_buf.data(), n_size);
+            ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);
+            if (check_tensors && !ggml_validate_row_data(cur->type, read_buf.data(), n_size)) {
+                throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
+            }
+            return n_size;
+        }
+    };
+
+    // An iterator that the threadpool shares to get the next tensor for loading.
+    // Each thread loops over this function until there are no more tensors left to load.
+    auto make_next_tensor = [&]() {
+        auto cursor = std::make_shared<std::atomic<ggml_tensor *>>(ggml_get_first_tensor(ctx));
+        auto next_tensor = [this, ctx, cursor]() -> ggml_tensor * {
+            while (true) {
+                ggml_tensor * cur = cursor->load();
+                if (!cur) {
+                    return nullptr;
+                }
+                if (!cursor->compare_exchange_weak(cur, ggml_get_next_tensor(ctx, cur))) {
+                    continue;
+                }
+
+                // With split experts models get_weight can return nullptr.
+                if (get_weight(ggml_get_name(cur))) {
+                    return cur;
+                }
+            }
+        };
+        return next_tensor;
+    };
+    auto next_tensor = make_next_tensor();
+
+    std::atomic<size_t>  loaded{size_done}; // bytes loaded so far, for the progress bar
+    std::atomic<bool>    cancelled{false};
+    std::atomic<bool>    failed{false};
+    std::exception_ptr   first_exception;
+
+    // threadpool worker.
+    auto worker = [&](int thread_idx) {
+        try {
+            while (!cancelled.load() && !failed.load()) {
+                if (progress_callback) {
+                    const size_t done   = loaded.load(std::memory_order_relaxed);
+                    std::lock_guard<std::mutex> lock(load_mutex);
+                    if (!progress_callback((float) done / size_data, progress_callback_user_data)) {
+                        cancelled.store(true);
+                        break;
+                    }
+                }
+                ggml_tensor * cur = next_tensor();
+                if (!cur) {
+                    break;
+                }
+                const size_t n_size = load_tensor(cur, thread_idx);
+                loaded.fetch_add(n_size, std::memory_order_relaxed);
+            }
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(load_mutex);
+            if (!failed.exchange(true)) {
+                first_exception = std::current_exception();
+            }
+        }
+    };
+
+    std::vector<std::thread> pool;
+    for (int thread_idx = 0; thread_idx < n_workers; ++thread_idx) {
+        pool.emplace_back(worker, thread_idx);
+    }
+    for (auto & t : pool) {
+        t.join();
+    }
+
+    size_done = loaded.load();
+    if (first_exception) {
+        std::rethrow_exception(first_exception);
+    }
+    if (cancelled.load()) {
+        return false;
     }
 
 #if defined(GGML_USE_CUDA)
     // free temporary resources used for async cuda uploads
     if (cuda_backend) {
-        for (size_t idx = 0; idx < n_buffers;++idx) {
+        for (size_t idx = 0; idx < (size_t)n_workers;++idx) {
             ggml_backend_event_synchronize(events[idx]);
             ggml_backend_event_free(events[idx]);
             ggml_backend_buffer_free(host_buffers[idx]);
@@ -1098,5 +1389,8 @@ template bool llama_model_loader::get_key_or_arr<std::array<int, 4>>(enum llm_kv
 template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
 template bool llama_model_loader::get_key_or_arr<std::array<float, 512>>(enum llm_kv kid, std::array<float, 512> & result, uint32_t n, bool required);
 
+template std::enable_if<std::is_integral<unsigned int>::value, bool>::type llama_model_loader::get_arr_n<unsigned int>(const std::string &, unsigned int &, bool);
 template std::enable_if<std::is_integral<unsigned int>::value, bool>::type llama_model_loader::get_arr_n<unsigned int>(enum llm_kv, unsigned int&, bool);
-
+template bool llama_model_loader::get_arr<int32_t, 8>(const std::string &, std::array<int32_t, 8> &, bool);
+template bool llama_model_loader::get_arr<uint32_t, 8>(const std::string &, std::array<uint32_t, 8> &, bool);
+template bool llama_model_loader::get_arr<uint32_t>(const std::string &, std::vector<uint32_t> &, bool);

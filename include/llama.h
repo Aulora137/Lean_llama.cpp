@@ -52,6 +52,9 @@
 #define LLAMA_STATE_SEQ_MAGIC   LLAMA_FILE_MAGIC_GGSQ
 #define LLAMA_STATE_SEQ_VERSION 3
 
+#define LLAMA_SERVER_MAGIC 0x6c6d7376u // 'lmsv'
+#define LLAMA_SERVER_VERSION 1
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -375,6 +378,7 @@ extern "C" {
 
         enum ggml_type type_k;
         enum ggml_type type_v;
+        enum ggml_type idx_type_k;
         uint32_t max_ctx_size;
         int32_t  n_seq_max;
         int32_t  n_ubatch;
@@ -382,9 +386,21 @@ extern "C" {
         int32_t  fit_margin;
         bool     fit;
         int32_t  worst_graph_tokens;
+        enum ggml_type type_k_first;
+        enum ggml_type type_k_last;
+        enum ggml_type type_v_first;
+        enum ggml_type type_v_last;
+        int32_t n_k_first;
+        int32_t n_k_last;
+        int32_t n_v_first;
+        int32_t n_v_last;
+
+        enum ggml_type extra_output_type;
 
         // proportion of the model (layers or rows) to offload to each GPU, size: llama_max_devices()
         const float * tensor_split;
+
+        const int   * fit_margin_array;
 
         // comma separated list of RPC servers to use for offloading
         const char * rpc_servers;
@@ -415,6 +431,7 @@ extern "C" {
         bool mtp;           // if true, load MTP layers if present
         bool dry_run;       // skip loading tensors
         bool flash_attn;
+        bool defer_experts;    // defer expert mmap residency to speed up model loading (Linux only)
     };
 
     // NOTE: changing the default values of parameters marked as [EXPERIMENTAL] may cause crashes or incorrect results in certain configurations
@@ -449,7 +466,17 @@ extern "C" {
 
         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
+        enum ggml_type idx_type_k; // data type for indexer K cache [EXPERIMENTAL]
         enum ggml_type type_reduce; // data type for reduce operations
+        enum ggml_type type_graph_attn; // flash-attn precision under -sm graph
+        enum ggml_type type_k_first;
+        enum ggml_type type_k_last;
+        enum ggml_type type_v_first;
+        enum ggml_type type_v_last;
+        int32_t n_k_first;
+        int32_t n_k_last;
+        int32_t n_v_first;
+        int32_t n_v_last;
 
         // Keep the booleans together to avoid misalignment during copy-by-value.
         bool logits_all;  // the llama_decode() call computes all logits, not just the last one (DEPRECATED - set llama_batch.logits instead)
@@ -464,9 +491,14 @@ extern "C" {
         bool fused_mmad;        // whether to use fused mul+multi_add op [EXPERIMENTAL]
         bool rope_cache;        // whether to use RoPE cache [EXPERIMENTAL]
         bool graph_reuse;       // whether to reuse graphs when possible [EXPERIMENTAL]
+        bool dsa;               // enable GLM DSA sparse attention (off by default) [EXPERIMENTAL]
+        bool fused_idx_topk;    // enable the fused indexer topk op (off by default) [EXPERIMENTAL]
+        int  dsa_top_k;         // DSA top-k override (<0 => model's configured indexer_top_k) [EXPERIMENTAL]
         int  min_experts;
         float thresh_experts;
         bool only_active_experts;
+        bool prefetch_experts;  // if true, stream mmap'd MoE expert weights into the page cache (Linux only)
+        int  prefetch_experts_threads; // number of expert prefetch workers (<=0 = auto)
         bool k_cache_hadamard;  // if true, apply Hadamard transfrom to K-cache
         bool v_cache_hadamard;  // if true, apply Hadamard transfrom to V-cache (needs FA)
         float kv_outlier_frac;  // fraction of outlier channels for mixed-precision KV (0=disabled)
@@ -486,11 +518,13 @@ extern "C" {
     };
 
     // model quantization parameters
+    struct quantize_user_data;
     typedef struct llama_model_quantize_params {
         int32_t nthread;                     // number of threads to use for quantizing, if <=0 will use std::thread::hardware_concurrency()
         enum llama_ftype ftype;              // quantize to this llama_ftype
         enum ggml_type output_tensor_type;   // output tensor type
         enum ggml_type token_embedding_type; // token embeddings tensor type
+        enum ggml_type per_layer_token_embedding_type; // token embeddings tensor type
         enum ggml_type attn_q_type;          // attention query tensor type
         enum ggml_type attn_k_type;          // attention key tensor type
         enum ggml_type attn_v_type;          // attention value tensor type
@@ -500,6 +534,7 @@ extern "C" {
         enum ggml_type ffn_down_type;        // feedforward network down type
         enum ggml_type ffn_up_type;          // feedforward network up type
         enum ggml_type ffn_gate_inp_type;    // routed experts probabilities typy (relevant for MoE models only)
+        enum ggml_type extra_output_type;    // routed experts probabilities typy (relevant for MoE models only)
         bool allow_requantize;               // allow quantizing non-f32/f16 tensors
         bool quantize_output_tensor;         // quantize output.weight
         bool only_copy;                      // only copy tensors - ftype, allow_requantize and quantize_output_tensor are ignored
@@ -513,6 +548,7 @@ extern "C" {
         void * kv_overrides;                 // pointer to vector containing overrides
         void * custom_quants;                // pointer to vector containing custom quantization rules
         void * repack_pattern;               // pointer to a vector containing regexes to be used for matching tensor names. Can be null
+        struct quantize_user_data * user_data; // so we can pass extra data to the quantization functions
     } llama_model_quantize_params;
 
     // grammar types
@@ -570,24 +606,6 @@ extern "C" {
             struct llama_context_params   params);
 
     LLAMA_API void llama_set_offload_policy(struct llama_context * lctx, int op, bool on_or_off);
-
-    // LeanInfer Phase 2c: set FILE* for expert activation logging (MoE models)
-    // Pass NULL to disable. The caller owns the FILE and must close it after llama_free.
-    LLAMA_API void llama_set_expert_log(struct llama_context * ctx, FILE * fp);
-
-    // LeanInfer Phase 2c: apply hot/warm/cold expert madvise tiering from a policy.json file.
-    // Calls madvise(MADV_WILLNEED) on hot expert weight pages and madvise(MADV_DONTNEED) on cold
-    // expert weight pages. Only works when the model uses mmap (use_mmap=true, default).
-    // Must be called after llama_init / llama_new_context_with_model.
-    // Returns the number of experts tiered, or -1 on error.
-    LLAMA_API int llama_apply_expert_policy(struct llama_context * ctx, const char * policy_path);
-
-    // LeanInfer Phase 3b: enable dynamic expert prefetch.
-    // After each layer's top-k gating, issues madvise(MADV_WILLNEED) on those same
-    // expert IDs in the next n_ahead layers.  Uses expert locality: active experts
-    // tend to remain active in nearby layers.  n_ahead=0 disables.
-    // Linux only (no-op on other platforms).
-    LLAMA_API void llama_enable_expert_prefetch(struct llama_context * ctx, int n_ahead);
 
     // Frees all allocated memory
     LLAMA_API void llama_free(struct llama_context * ctx);
@@ -681,6 +699,27 @@ extern "C" {
     LLAMA_API bool llama_model_is_hybrid(const struct llama_model * model);
 
     LLAMA_API bool llama_model_has_recurrent(const struct llama_model * model);
+
+    // Returns true if the model is openPangu (conv-only recurrent state that rides the spec-rollback checkpoint)
+    LLAMA_API bool llama_model_is_openpangu(const struct llama_model * model);
+
+    // Returns true if the model is a Gemma 4 MTP assistant (external frozen-KV speculative drafter)
+    LLAMA_API bool llama_model_is_gemma4_mtp_assistant(const struct llama_model * model);
+
+    LLAMA_API bool llama_is_gemma4_mtp_file(const char * path);
+
+    LLAMA_API bool llama_model_is_split_mode_graph(const struct llama_model * model);
+
+    // Returns false for models whose KV cache cannot be re-positioned after the fact
+    // (K-shift / context shift / self-extend), e.g. openPangu's latent cache.
+    LLAMA_API bool llama_model_supports_ctx_shift(const struct llama_model * model);
+
+    // Returns false for models that can only reuse a cached sequence as a pure extension:
+    // rewinding into the middle of a decoded sequence loses per-position side state
+    // (e.g. openPangu keeps only the current recurrent conv state).
+    LLAMA_API bool llama_model_supports_partial_kv_reuse(const struct llama_model * model);
+
+    LLAMA_API const char * llama_model_arch_string(const struct llama_model * model);
 
     // Returns 0 on success
     LLAMA_API uint32_t llama_model_quantize(
@@ -796,6 +835,28 @@ extern "C" {
     // Clear the KV cache - both cell info is erased and KV data is zeroed
     LLAMA_API void llama_kv_cache_clear(
             struct llama_context * ctx);
+
+    // Unified checkpoint API for recurrent/hybrid speculative decoding.
+    enum llama_spec_ckpt_mode {
+        LLAMA_SPEC_CKPT_NONE        = -1,
+        LLAMA_SPEC_CKPT_AUTO        =  0,
+        LLAMA_SPEC_CKPT_PER_STEP    =  1,
+        LLAMA_SPEC_CKPT_GPU_FALLBACK =  2,
+        LLAMA_SPEC_CKPT_CPU         =  3,
+    };
+
+    // Initialise the checkpoint system for the upcoming speculation window.
+    LLAMA_API int llama_spec_ckpt_init(struct llama_context * ctx, int mode, int max_tokens);
+
+    // Save the current recurrent state as a speculative checkpoint.
+    LLAMA_API bool llama_spec_ckpt_save(struct llama_context * ctx, llama_seq_id seq_id);
+
+    // Restore the recurrent state after speculative decode.
+    LLAMA_API bool llama_spec_ckpt_restore(struct llama_context * ctx, llama_seq_id seq_id,
+                                            llama_pos n_past, int accepted_step);
+
+    // Discard the saved checkpoint and reset internal mode state.
+    LLAMA_API void llama_spec_ckpt_discard(struct llama_context * ctx);
 
     // Removes all tokens that belong to the specified sequence and have positions in [p0, p1)
     // Returns false if a partial sequence cannot be removed. Removing a whole sequence never fails
@@ -1058,6 +1119,10 @@ extern "C" {
     // returns NULL for invalid ids.
     LLAMA_API float * llama_get_logits_ith(struct llama_context * ctx, int32_t i);
 
+    // Get the argmax token ID for DFlash draft position i without materializing full logits.
+    // Returns LLAMA_TOKEN_NULL if argmax is not available (falls back to logits path).
+    LLAMA_API llama_token llama_get_dflash_draft_token_ith(struct llama_context * ctx, int32_t i);
+
     // Get all output token embeddings.
     // when pooling_type == LLAMA_POOLING_TYPE_NONE or when using a generative model,
     // the embeddings for which llama_batch.logits[i] != 0 are stored contiguously
@@ -1253,7 +1318,7 @@ extern "C" {
     LLAMA_API struct llama_grammar * llama_grammar_copy(const struct llama_grammar * grammar);
 
     /// @details Apply constraints from grammar
-    LLAMA_API void llama_grammar_sample(
+    LLAMA_API void llama_grammar_apply(
             const struct llama_grammar * grammar,
             const struct llama_context * ctx,
                 llama_token_data_array * candidates);
@@ -1261,7 +1326,7 @@ extern "C" {
             struct llama_context * ctx,
           llama_token_data_array * candidates,
       const struct llama_grammar * grammar),
-        "use llama_grammar_sample instead");
+        "use llama_grammar_apply instead");
 
     /// @details Accepts the sampled token into the grammar
     LLAMA_API void llama_grammar_accept_token(
@@ -1535,6 +1600,8 @@ LLAMA_API struct llama_grammar* llama_sampler_init_grammar_lazy_patterns(
 
     LLAMA_API void llama_set_draft_input_hidden_state(struct llama_context * ctx, const float * hidden_state);
 
+    LLAMA_API bool llama_reload_changed_tensors(struct llama_context * ctx);
+
 #ifdef __cplusplus
 }
 #endif
@@ -1558,5 +1625,7 @@ const std::vector<std::pair<std::string, struct ggml_tensor *>> & llama_internal
 llama_token llama_sample_token_with_rng(struct llama_context * ctx, llama_token_data_array * candidates, std::mt19937 & rng);
 
 #endif // LLAMA_API_INTERNAL
+
+size_t llama_fill_from_utf8(void* utf8, void* cpts, void* scripts);
 
 #endif // LLAMA_H

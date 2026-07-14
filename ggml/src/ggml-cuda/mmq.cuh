@@ -121,12 +121,15 @@ struct tile_x_sizes {
 };
 
 static constexpr int get_mmq_x_max_host(const int cc) {
+    // On NVIDIA Volta the device-side MMQ kernels are only instantiated up to
+    // MMQ_DP4A_MAX_BATCH_SIZE when GGML_CUDA_FORCE_MMQ is defined (see
+    // get_mmq_x_max_device() below). If the host dispatch picks a larger tile,
+    // the kernel hits NO_DEVICE_CODE at runtime. Without GGML_CUDA_FORCE_MMQ
+    // the host already capped at MMQ_DP4A_MAX_BATCH_SIZE so cuBLAS handles
+    // larger batches. Either way the bound on Volta is the same, so collapse
+    // the two paths and document the constraint.
     return int8_mma_available(cc) ? 128 :
-#ifdef GGML_CUDA_FORCE_MMQ
-        cc >= CC_VOLTA && cc < CC_OFFSET_AMD ? 128                     : 64;
-#else
         cc >= CC_VOLTA && cc < CC_OFFSET_AMD ? MMQ_DP4A_MAX_BATCH_SIZE : 64;
-#endif // GGML_CUDA_FORCE_MMQ
 }
 
 static constexpr __device__ int get_mmq_x_max_device() {
@@ -4310,5 +4313,7 @@ void ggml_cuda_op_mul_mat_q(
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
     const char * src1_ddq_i, float * dst_dd_i, const int64_t row_low, const int64_t row_high, const int64_t src1_ncols,
     const int64_t src1_padded_row_size, cudaStream_t stream);
+
+void ggml_cuda_op_mul_mat_q(ggml_backend_cuda_context & ctx, enum ggml_type type, const mmq_args & args);
 
 bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11);

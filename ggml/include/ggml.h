@@ -240,7 +240,10 @@
 // if you need to load more than 64 model shards.
 #define GGML_MAX_CONTEXTS       64
 #endif
-#define GGML_MAX_SRC            10
+#ifndef GGML_MAX_SRC
+// For the machines with 11+ GPUs use -DGGML_MAX_SRC=N
+#define GGML_MAX_SRC            16
+#endif
 #ifndef GGML_MAX_NAME
 #define GGML_MAX_NAME           64
 #endif
@@ -702,6 +705,11 @@ extern "C" {
         GGML_OP_REDUCE,
         GGML_OP_FAKE_CPY,
         GGML_OP_FUSED_NORM,
+        GGML_OP_FUSED_RMS_RMS_ADD,
+        GGML_OP_BLEND,
+        GGML_OP_INDEXER_TOPK,
+        GGML_OP_MASK_TOPK,
+        GGML_OP_SINKHORN,
 
         GGML_OP_COUNT,
     };
@@ -828,6 +836,9 @@ extern "C" {
         // abort ggml_graph_compute when true
         ggml_abort_callback abort_callback;
         void *              abort_callback_data;
+
+        // read-ahead selected MoE expert weights in the CPU matmul-id kernels
+        bool moe_expert_prefetch;
     };
 
     enum ggml_cgraph_eval_order {
@@ -1117,6 +1128,7 @@ extern "C" {
             struct ggml_tensor  * a,
             struct ggml_tensor  * b);
 
+    // Source may be F32, F16, or a supported quantized type; output is always F32.
     GGML_API struct ggml_tensor * ggml_hadamard(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
@@ -1270,6 +1282,12 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             struct ggml_tensor  * b,
+            int                   dim);
+    GGML_API struct ggml_tensor * ggml_concat_inplace(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * result,
             int                   dim);
 
     GGML_API struct ggml_tensor * ggml_abs(
@@ -1574,6 +1592,14 @@ extern "C" {
             struct ggml_tensor  * a,
             float                 eps);
 
+    GGML_API struct ggml_tensor * ggml_fused_rms_rms_add(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x1,
+            struct ggml_tensor  * c1,
+            struct ggml_tensor  * x2,
+            struct ggml_tensor  * c2,
+            float                 eps);
+
     // a - x
     // b - dy
     GGML_API struct ggml_tensor * ggml_rms_norm_back(
@@ -1589,6 +1615,12 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             struct ggml_tensor  * b);
+
+    GGML_API struct ggml_tensor * ggml_mul_mat_inplace(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * result);
 
     // change the precision of a matrix multiplication
     // set to GGML_PREC_F32 for higher precision (useful for phi-2)
@@ -1824,6 +1856,16 @@ extern "C" {
             int64_t               ne1,
             int64_t               ne2,
             int64_t               ne3);
+
+    GGML_API struct ggml_tensor * ggml_reshape_4d_ext(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            enum ggml_type        type,
+            int64_t               ne0,
+            int64_t               ne1,
+            int64_t               ne2,
+            int64_t               ne3);
+
 
     // offset in bytes
     GGML_API struct ggml_tensor * ggml_view_1d(
@@ -2361,6 +2403,19 @@ extern "C" {
             struct ggml_tensor  * a,
             float                 c);
 
+    // Overwrite values in a with c for the indeces stored in b
+    GGML_API struct ggml_tensor * ggml_blend(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            float                 c);
+
+    GGML_API struct ggml_tensor * ggml_indexer_mask(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * mask,
+            struct ggml_tensor  * topk);
+
+
     // sort rows
     enum ggml_sort_order {
         GGML_SORT_ORDER_ASC,
@@ -2442,7 +2497,8 @@ extern "C" {
             struct ggml_tensor  * s,
             struct ggml_tensor  * x,
             struct ggml_tensor  * c,
-            struct ggml_tensor  * sq);
+            struct ggml_tensor  * sq,
+            struct ggml_tensor  * saved_steps);
 
     GGML_API struct ggml_tensor * ggml_ssm_scan(
             struct ggml_context * ctx,
@@ -2520,7 +2576,33 @@ extern "C" {
             struct ggml_tensor  * v,
             struct ggml_tensor  * g,
             struct ggml_tensor  * beta,
-            struct ggml_tensor  * state);
+            struct ggml_tensor  * state,
+            struct ggml_tensor  * saved_steps);
+
+    GGML_API struct ggml_tensor * ggml_indexer_topk(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * w,
+            struct ggml_tensor  * mask,
+            enum ggml_unary_op    op,
+            int                   n_top_k);
+
+    // Sinkhorn normalization of a flat [S*S, T] batch of S x S matrices into
+    // doubly-stochastic form: softmax over columns, then column normalization,
+    // then (n_iters - 1) rounds of row + column normalization (ends on columns).
+    // The flat input is row-major (column index fastest). eps, when non-zero, is
+    // added to the softmax output and to every normalization sum before dividing.
+    // With output_transposed the result is [S, S, T] with ne0 = row, ne1 = column
+    // (ready for out[c] = sum_r m[r,c] * residual[r] consumers); otherwise the
+    // bare input layout (ne0 = column) is kept.
+    GGML_API struct ggml_tensor * ggml_sinkhorn(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   S,
+            int                   n_iters,
+            float                 eps,
+            bool                  output_transposed);
 
     // custom operators
 
@@ -2928,6 +3010,11 @@ extern "C" {
     // some quantization type cannot be used without an importance matrix
     GGML_API bool ggml_quantize_requires_imatrix(enum ggml_type type);
 
+    struct quantize_user_data {
+        bool  symmetric_q4_0;
+        bool  slow_iq2_ks;
+    };
+
     // calls ggml_quantize_init internally (i.e. can allocate memory)
     GGML_API size_t ggml_quantize_chunk(
             enum ggml_type   type,
@@ -2936,7 +3023,8 @@ extern "C" {
                    int64_t   start,
                    int64_t   nrows,
                    int64_t   n_per_row,
-               const float * imatrix);
+               const float * imatrix,
+               const struct quantize_user_data * user_data);
 
     //
     // gguf
@@ -3086,7 +3174,6 @@ extern "C" {
     GGML_API int ggml_cpu_has_blas       (void);
     GGML_API int ggml_cpu_has_cuda       (void);
     GGML_API int ggml_cpu_has_vulkan     (void);
-    GGML_API int ggml_cpu_has_kompute    (void);
     GGML_API int ggml_cpu_has_gpublas    (void);
     GGML_API int ggml_cpu_has_sse3       (void);
     GGML_API int ggml_cpu_has_ssse3      (void);

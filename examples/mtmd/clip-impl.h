@@ -40,6 +40,7 @@
 #define KEY_FEATURE_LAYER       "clip.vision.feature_layer"
 #define KEY_PROJ_SCALE_FACTOR   "clip.vision.projector.scale_factor"
 #define KEY_SPATIAL_MERGE_SIZE  "clip.vision.spatial_merge_size"
+#define KEY_TEMPORAL_PATCH_SIZE "clip.vision.temporal_patch_size"
 #define KEY_IS_DEEPSTACK_LAYERS "clip.vision.is_deepstack_layers"
 
 #define KEY_MM_PATCH_MERGE_TYPE   "clip.vision.mm_patch_merge_type"
@@ -80,6 +81,9 @@
 #define TN_LN_2            "%s.blk.%d.ln2.%s" // layer norm
 #define TN_LS_1            "%s.blk.%d.ls1.%s" // layer scale
 #define TN_LS_2            "%s.blk.%d.ls2.%s" // layer scale
+#define TN_LS_OUT          "%s.blk.%d.out_scale.%s"      // layer out scale (gemma4)
+#define TN_ATTN_POST_NORM  "%s.blk.%d.attn_post_norm.%s" // post-attn norm (gemma4)
+#define TN_FFN_POST_NORM   "%s.blk.%d.ffn_post_norm.%s"  // post-FFN norm (gemma4)
 #define TN_LN_PRE          "%s.pre_ln.%s"
 #define TN_LN_POST         "%s.post_ln.%s"
 #define TN_LLAVA_PROJ      "mm.%d.%s"
@@ -122,6 +126,10 @@
 #define TN_MM_NORM_PRE  "mm.a.norm_pre.%s"
 #define TN_MM_NORM_MID  "mm.a.norm_mid.%s"
 
+// gemma4
+#define TN_STD_BIAS              "v.std_bias"
+#define TN_STD_SCALE             "v.std_scale"
+
 // cogvlm
 #define TN_MM_POST_FC_NORM "mm.post_fc_norm.%s"
 #define TN_MM_H_TO_4H      "mm.up.%s"
@@ -143,6 +151,8 @@ enum projector_type {
     PROJECTOR_TYPE_QWEN2VL,
     PROJECTOR_TYPE_QWEN3VL,
     PROJECTOR_TYPE_GEMMA3,
+    PROJECTOR_TYPE_GEMMA4V,
+    PROJECTOR_TYPE_GEMMA4A,
     PROJECTOR_TYPE_IDEFICS3,
     PROJECTOR_TYPE_PIXTRAL,
     PROJECTOR_TYPE_QWEN25VL,
@@ -158,7 +168,9 @@ enum projector_type {
     PROJECTOR_TYPE_LIGHTONOCR,
     PROJECTOR_TYPE_COGVLM,
     PROJECTOR_TYPE_JANUS_PRO,
+    PROJECTOR_TYPE_MINIMAX_M3_VL,
     PROJECTOR_TYPE_UNKNOWN,
+
 };
 
 static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
@@ -171,6 +183,8 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_QWEN25VL,  "qwen2.5vl_merger"},
     { PROJECTOR_TYPE_QWEN3VL,   "qwen3vl_merger"},
     { PROJECTOR_TYPE_GEMMA3,    "gemma3"},
+    { PROJECTOR_TYPE_GEMMA4V,   "gemma4v"},
+    { PROJECTOR_TYPE_GEMMA4A,   "gemma4a"},
     { PROJECTOR_TYPE_IDEFICS3,  "idefics3"},
     { PROJECTOR_TYPE_PIXTRAL,   "pixtral"},
     { PROJECTOR_TYPE_ULTRAVOX,  "ultravox"},
@@ -185,6 +199,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_LIGHTONOCR,"lightonocr"},
     { PROJECTOR_TYPE_COGVLM,    "cogvlm"},
     { PROJECTOR_TYPE_JANUS_PRO, "janus_pro"},
+    { PROJECTOR_TYPE_MINIMAX_M3_VL, "minimax_m3_vl"},
 };
 
 static projector_type clip_projector_type_from_string(const std::string & str) {
@@ -389,7 +404,7 @@ static std::string gguf_data_to_str(enum gguf_type type, const void * data, int 
         case GGUF_TYPE_INT64:   return std::to_string(((const int64_t  *)data)[i]);
         case GGUF_TYPE_FLOAT32: return std::to_string(((const float    *)data)[i]);
         case GGUF_TYPE_FLOAT64: return std::to_string(((const double   *)data)[i]);
-        case GGUF_TYPE_BOOL:    return ((const bool *)data)[i] ? "true" : "false";
+        case GGUF_TYPE_BOOL:    return ((const int8_t *)data)[i] != 0 ? "true" : "false";
         default:                return string_format("unknown type %d", type);
     }
 }

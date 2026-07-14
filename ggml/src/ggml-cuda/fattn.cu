@@ -13,7 +13,7 @@
 #include "fattn-mma-f16-interface.cuh"
 #include "fattn-new-mma.cuh"
 #include "fattn.cuh"
-#include "convert.cuh"
+#include "dsa_attn.cuh"
 
 #include <cstdint>
 
@@ -21,6 +21,14 @@
 
 static inline bool mma_better_than_turing(const int cc) {
     return GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) > CC_TURING;
+}
+
+// On GPUs without fp16 MMA (Pascal/sm_60), the MLA absorbed head sizes 576/512 are asymmetric, so the f16
+// vector kernel (which requires K==V) rejects them and decode falls back to the CPU. Route MLA decode
+// (batch <= 8) to the f32 vector kernel to keep it on the GPU. Single-sourced so the dispatch and the
+// is_supported check cannot drift.
+static inline bool is_pascal_mla_absorbed_decode(const ggml_tensor * Q, const ggml_tensor * K, const ggml_tensor * V) {
+    return Q->ne[1] <= 8 && K->ne[0] == 576 && V->ne[0] == 512;
 }
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -35,11 +43,19 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     const int32_t precision = KQV->op_params[3];
     const int32_t n_swa = KQV->op_params[4];
 
+    if (dst->src[5]) {
+        if (ggml_cuda_dsa_attn_ext(ctx, dst)) {
+            return;
+        }
+    }
+
     ggml_tensor local_dst, Kl, Vl, Ml;
     if (n_swa > 0) {
         int ntokens = std::max(FATTN_KQ_STRIDE, int(Q->ne[1]));
         int nton = FATTN_KQ_STRIDE*((ntokens + n_swa + FATTN_KQ_STRIDE - 1)/FATTN_KQ_STRIDE);
         int first = K->ne[1] - nton;
+        local_dst = *dst;
+        local_dst.op_params[4] = 0;
         if (first > 0) {
             local_dst = *dst;
             Kl = *K; Kl.ne[1] = nton; Kl.data = (char *)K->data + K->nb[1]*first;
@@ -51,6 +67,7 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             local_dst.op_params[4] = 0;
             dst = &local_dst;
         }
+        dst = &local_dst;
     }
 
     // On AMD the tile kernels perform poorly, use the vec kernel instead:
@@ -73,6 +90,10 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     }
 
     if (!fp16_mma_available(cc)) {
+        if (is_pascal_mla_absorbed_decode(Q, K, V)) {
+            ggml_cuda_flash_attn_ext_vec_f32(ctx, dst);
+            return;
+        }
         if (precision == GGML_PREC_DEFAULT) {
             if (Q->ne[1] <= 8 || Q->ne[0] == 256) {
                 ggml_cuda_flash_attn_ext_vec_f16(ctx, dst);
@@ -122,6 +143,7 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     if (new_mma_available(cc) &&
             ((K->ne[0] == 576 && V->ne[0] == 512) ||
              (K->ne[0] == 320 && V->ne[0] == 256) ||
+             (K->ne[0] == 512 && V->ne[0] == 512) ||
              (K->ne[0] == 192 && V->ne[0] == 128 && mma_better_than_turing(cc)))) {
         //printf("Using ggml_cuda_flash_attn_ext_mma_new\n");
         ggml_cuda_flash_attn_ext_mma_new(ctx, dst);
@@ -167,6 +189,9 @@ bool ggml_cuda_fattn_is_supported(ggml_backend_cuda_context & ctx, const ggml_te
     }
 
     if (!fp16_mma_available(cc)) {
+        if (is_pascal_mla_absorbed_decode(Q, K, V)) {
+            return ggml_cuda_fattn_vec_f32_is_supported(ctx, dst);
+        }
         if (precision == GGML_PREC_DEFAULT) {
             if (Q->ne[1] <= 8 || Q->ne[0] == 256) {
                 return ggml_cuda_fattn_vec_f16_is_supported(ctx, dst);
@@ -194,8 +219,8 @@ bool ggml_cuda_fattn_is_supported(ggml_backend_cuda_context & ctx, const ggml_te
     }
 
     if (new_mma_available(cc) &&
-            (Q->ne[0] == 576 || Q->ne[0] == 320 || (K->ne[0] == 192 && V->ne[0] == 128 && mma_better_than_turing(cc)))) {
-        if (Q->ne[0] == 576 || Q->ne[0] == 320) {
+            (Q->ne[0] == 576 || Q->ne[0] == 320 || Q->ne[0] == 512 || (K->ne[0] == 192 && V->ne[0] == 128 && mma_better_than_turing(cc)))) {
+        if (Q->ne[0] == 576 || Q->ne[0] == 512 || Q->ne[0] == 320) {
             int gqa_ratio = Q->ne[2]/K->ne[2];
             return (gqa_ratio % 4) == 0;
         }

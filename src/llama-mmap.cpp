@@ -3,6 +3,7 @@
 #include "llama-impl.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
 
 #include <cstring>
 #include <climits>
@@ -76,7 +77,7 @@ struct llama_file::impl {
         return ret;
     }
 
-    impl(const char * fname, const char * mode) {
+    impl(const char * fname, const char * mode) : path(fname), mode(mode) {
         fp = ggml_fopen(fname, mode);
         if (fp == NULL) {
             throw std::runtime_error(format("failed to open %s: %s", fname, strerror(errno)));
@@ -155,13 +156,15 @@ struct llama_file::impl {
         write_raw(&val, sizeof(val));
     }
 
+    std::string path;
+
     ~impl() {
         if (fp) {
             std::fclose(fp);
         }
     }
 #else
-    impl(const char * fname, const char * mode) {
+    impl(const char * fname, const char * mode) : path(fname), mode(mode) {
         fp = ggml_fopen(fname, mode);
         if (fp == NULL) {
             throw std::runtime_error(format("failed to open %s: %s", fname, strerror(errno)));
@@ -231,6 +234,7 @@ struct llama_file::impl {
     void write_u32(uint32_t val) const {
         write_raw(&val, sizeof(val));
     }
+    std::string path;
 
     ~impl() {
         if (fp) {
@@ -241,10 +245,19 @@ struct llama_file::impl {
 
     FILE * fp;
     size_t size;
+    std::string mode;
 };
 
 llama_file::llama_file(const char * fname, const char * mode) : pimpl(std::make_unique<impl>(fname, mode)) {}
 llama_file::~llama_file() = default;
+
+std::unique_ptr<llama_file> llama_file::clone() const {
+    //can only clone readable file pointers without truncating.
+    GGML_ASSERT(!pimpl->mode.empty() && pimpl->mode[0] == 'r'
+                && pimpl->mode.find('+') == std::string::npos);
+    return std::make_unique<llama_file>(pimpl->path.c_str(), pimpl->mode.c_str());
+}
+
 
 size_t llama_file::tell() const { return pimpl->tell(); }
 size_t llama_file::size() const { return pimpl->size; }
@@ -366,6 +379,26 @@ struct llama_mmap::impl {
         }
     }
 
+    void dontneed_fragment(size_t first, size_t last) {
+        int page_size = mapped_page_size > 0 ? mapped_page_size : sysconf(_SC_PAGESIZE);
+        align_range(&first, &last, page_size);
+        size_t len = last - first;
+
+        if (len == 0) {
+            return;
+        }
+
+        GGML_ASSERT(first % page_size == 0);
+        GGML_ASSERT(last % page_size == 0);
+        GGML_ASSERT(last >= first);
+
+#ifdef __linux__
+        if (madvise((uint8_t *) addr + first, len, MADV_DONTNEED)) {
+            LLAMA_LOG_WARN("warning: madvise(..., MADV_DONTNEED) failed: %s\n", strerror(errno));
+        }
+#endif
+    }
+
     void unmap_fragment(size_t first, size_t last) {
         int page_size = mapped_page_size > 0 ? mapped_page_size : sysconf(_SC_PAGESIZE);
         align_range(&first, &last, page_size);
@@ -403,6 +436,7 @@ struct llama_mmap::impl {
     }
 
     ~impl() {
+        ggml_backend_prefetch_unregister_mapping(addr);
         for (const auto & frag : mapped_fragments) {
             if (munmap((char *) addr + frag.first, frag.second - frag.first)) {
                 LLAMA_LOG_WARN("warning: munmap failed: %s\n", strerror(errno));
@@ -454,6 +488,11 @@ struct llama_mmap::impl {
         }
     }
 
+    void dontneed_fragment(size_t first, size_t last) {
+        GGML_UNUSED(first);
+        GGML_UNUSED(last);
+    }
+
     void unmap_fragment(size_t first, size_t last) {
         GGML_UNUSED(first);
         GGML_UNUSED(last);
@@ -470,6 +509,13 @@ struct llama_mmap::impl {
         GGML_UNUSED(file);
         GGML_UNUSED(prefetch);
         GGML_UNUSED(numa);
+
+        throw std::runtime_error("mmap not supported");
+    }
+
+    void dontneed_fragment(size_t first, size_t last) {
+        GGML_UNUSED(first);
+        GGML_UNUSED(last);
 
         throw std::runtime_error("mmap not supported");
     }
@@ -494,6 +540,7 @@ llama_mmap::~llama_mmap() = default;
 size_t llama_mmap::size() const { return pimpl->size; }
 void * llama_mmap::addr() const { return pimpl->addr; }
 
+void llama_mmap::dontneed_fragment(size_t first, size_t last) { pimpl->dontneed_fragment(first, last); }
 void llama_mmap::unmap_fragment(size_t first, size_t last) { pimpl->unmap_fragment(first, last); }
 
 #if defined(_POSIX_MEMLOCK_RANGE) || defined(_WIN32)
@@ -648,3 +695,5 @@ const bool llama_mlock::SUPPORTED = false;
 size_t llama_path_max() {
     return PATH_MAX;
 }
+
+const std::string & llama_file::get_path() const { return pimpl->path; }

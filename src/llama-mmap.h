@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <string>
 
 struct llama_file;
 struct llama_mmap;
@@ -28,6 +29,9 @@ struct llama_file {
 
     void write_raw(const void * ptr, size_t len) const;
     void write_u32(uint32_t val) const;
+    const std::string & get_path() const;
+
+    std::unique_ptr<llama_file> clone() const;
 
 private:
     struct impl;
@@ -41,6 +45,8 @@ struct llama_mmap {
 
     size_t size() const;
     void * addr() const;
+
+    void dontneed_fragment(size_t first, size_t last);
 
     void unmap_fragment(size_t first, size_t last);
 

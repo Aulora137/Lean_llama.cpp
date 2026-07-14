@@ -283,6 +283,11 @@ struct mtmd_context {
             img_beg = "<|vision_start|>";
             img_end = "<|vision_end|>";
 
+        } else if (proj == PROJECTOR_TYPE_MINIMAX_M3_VL) {
+            // ]<]start of image[>[ ... (image embeddings) ... ]<]end of image[>[
+            img_beg = "]<]start of image[>[";
+            img_end = "]<]end of image[>[";
+
         } else if (proj == PROJECTOR_TYPE_LLAMA4) {
             // (more details in mtmd_context constructor)
             img_beg = "<|image_start|>";
@@ -300,6 +305,17 @@ struct mtmd_context {
             img_beg = "<|im_start|>";
             img_end = "<|im_end|>";
 
+        }
+        else if (proj == PROJECTOR_TYPE_GEMMA4V) {
+            // <|image> ... (image embeddings) ... <image|>
+            img_beg = "<|image>";
+            img_end = "<image|>";
+            //image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+        }
+        else if (proj == PROJECTOR_TYPE_KIMIK25) {
+            // template renders: <|media_begin|>image<|media_content|> <pad/embeddings> <|media_end|>
+            img_beg = "<|media_begin|>image<|media_content|>";
+            img_end = "<|media_end|>";
         }
     }
 
@@ -772,12 +788,20 @@ int32_t mtmd_encode_chunk(mtmd_context * ctx, const mtmd_input_chunk * chunk) {
             LOG_ERR("%s: model does not support vision input\n", __func__);
             return 1;
         }
+        // If in the future, we somehow accidentally try to reencode an already-encoded chunk,
+        // chunk->tokens_image will have been cleared out to save memory
+        GGML_ASSERT(!chunk->tokens_image->batch_f32.entries.empty()
+            && "mtmd_encode_chunk: image data already released (double encode?)");
         return mtmd_encode(ctx, chunk->tokens_image.get());
     } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
         if (!ctx->ctx_a) {
             LOG_ERR("%s: model does not support audio input\n", __func__);
             return 1;
         }
+        // If in the future, we somehow accidentally try to reencode an already-encoded chunk,
+        // chunk->tokens_audio will have been cleared out to save memory
+        GGML_ASSERT(!chunk->tokens_audio->batch_f32.entries.empty()
+            && "mtmd_encode_chunk: audio data already released (double encode?)");
         int n_mmproj_embd = ctx->n_embd_text;
         ctx->image_embd_v.resize(chunk->tokens_audio->n_tokens * n_mmproj_embd);
         bool ok = clip_image_batch_encode(
@@ -831,8 +855,10 @@ float * mtmd_get_output_embd(mtmd_context * ctx) {
 }
 
 bool mtmd_decode_use_non_causal(mtmd_context * ctx) {
-    if (ctx->ctx_v && clip_get_projector_type(ctx->ctx_v) == PROJECTOR_TYPE_GEMMA3) {
-        return true;
+    if (ctx->ctx_v) {
+        if (auto type = clip_get_projector_type(ctx->ctx_v); type == PROJECTOR_TYPE_GEMMA3 || type == PROJECTOR_TYPE_GEMMA4V) {
+            return true;
+        }
     }
     return false;
 }
@@ -1029,6 +1055,19 @@ void mtmd_input_chunk_free(mtmd_input_chunk * chunk) {
     }
 }
 
+void mtmd_input_chunk_free_raw_data(mtmd_input_chunk * chunk) {
+    if (!chunk) {
+        return;
+    }
+
+    if (chunk->tokens_image) {
+        chunk->tokens_image->batch_f32 = clip_image_f32_batch{};
+    }
+    if (chunk->tokens_audio) {
+        chunk->tokens_audio->batch_f32 = clip_image_f32_batch{};
+    }
+}
+
 // mtmd_image_tokens
 
 size_t mtmd_image_tokens_get_n_tokens(const mtmd_image_tokens * image_tokens) {
@@ -1053,6 +1092,18 @@ llama_pos mtmd_image_tokens_get_n_pos(const mtmd_image_tokens * image_tokens) {
     }
     return image_tokens->n_tokens();
 }
+
+mtmd_input_chunk * mtmd_create_input_chunk() {
+    auto * chunk = new mtmd_input_chunk{
+        MTMD_INPUT_CHUNK_TYPE_TEXT,
+        std::vector<llama_token>{},
+        nullptr,
+        nullptr
+    };
+    return chunk; 
+}
+
+
 
 // test function
 
@@ -1088,3 +1139,77 @@ mtmd_input_chunks * mtmd_test_create_input_chunks() {
 
     return chunks;
 }
+
+static mtmd_audio_tokens mtmd_audio_tokens_from_json(json & j) {
+    return mtmd_audio_tokens{
+        j.value<uint32_t>("n_tokens", 0),
+        clip_image_f32_batch {},
+        j.value("id","")
+    };
+}
+
+static mtmd_image_tokens mtmd_image_tokens_from_json(json & j) {
+    return mtmd_image_tokens{
+        j.value<uint32_t>("nx", 0),
+        j.value<uint32_t>("ny", 0),
+        j.value("use_mrope_pos",false),
+        clip_image_f32_batch {},
+        j.value("id","")
+    };
+}
+
+static json mtmd_audio_tokens_to_json(mtmd_audio_tokens *  chunk) {
+    json j;
+    if (chunk) {
+        j["n_tokens"] = chunk->n_tokens;
+        j["id"] = chunk->id;
+    }
+    return j;
+}
+
+static json mtmd_image_tokens_to_json(mtmd_image_tokens * chunk) {
+    json j;
+    if (chunk) {
+        j["nx"] = chunk->nx;
+        j["ny"] = chunk->ny;
+        j["use_mrope_pos"] = chunk->use_mrope_pos;
+        j["id"] = chunk->id;
+    }
+    return j;
+}
+
+mtmd_input_chunk * mtmd_input_chunk_from_json(json & j) {
+    mtmd_input_chunk * chunk = mtmd_create_input_chunk();
+    chunk->type = j.value("type", MTMD_INPUT_CHUNK_TYPE_TEXT);
+    chunk->tokens_text = j.value("tokens_text", chunk->tokens_text);
+    chunk->tokens_image = nullptr;
+    chunk->tokens_audio = nullptr;
+    if (j.contains("tokens_image")) {
+        chunk->tokens_image = mtmd_image_tokens_ptr(new mtmd_image_tokens());
+        auto image_json = j.value("tokens_image", json::array());
+        *chunk->tokens_image  = mtmd_image_tokens_from_json(image_json);
+    }
+    if (j.contains("tokens_audio")) {
+        chunk->tokens_audio = mtmd_audio_tokens_ptr(new mtmd_audio_tokens());
+        *chunk->tokens_audio = mtmd_audio_tokens_from_json(j.at("tokens_audio"));
+    }
+    return chunk;
+}
+
+void mtmd_input_chunk_to_json(mtmd_input_chunk * chunk, json & j) {
+    j.clear();
+    if (chunk) {
+        j["type"] = chunk->type;
+        j["tokens_text"] = chunk->tokens_text;
+        if (chunk->tokens_image) {
+            j["tokens_image"] = mtmd_image_tokens_to_json(chunk->tokens_image.get());
+        }
+        if (chunk->tokens_audio) {
+            j["tokens_audio"] = mtmd_audio_tokens_to_json(chunk->tokens_audio.get());
+        }
+    }
+}
+
+
+
+
