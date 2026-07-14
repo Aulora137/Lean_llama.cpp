@@ -2238,7 +2238,7 @@ ggml_tensor * llm_build_context::llm_build_kv(
     // LeanKV: mixed-precision noise simulation (LEANKV_MIXED_SIM=1).
     // Injects TQ3+TQ2 quantization noise into K after Hadamard rotation.
     // Used with -ctk f16 -khad to measure mixed-precision quality without FA changes.
-    if (leankv_mixed_sim_enabled(hparams.n_embd_head_k)) {
+    if (leankv_mixed_sim_enabled(hparams.n_embd_head_k(il))) {
         k_cur = ggml_map_custom1(ctx, k_cur, tq_mixed_noise_op, 1, (void *)&g_mixed_noise_cfg);
         cb(k_cur, "Kcur_mixed_noise", il);
     }

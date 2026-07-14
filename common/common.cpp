@@ -1814,6 +1814,8 @@ bool gpt_params_find_arg(int argc, char ** argv, const std::string & arg, gpt_pa
     }
     if (arg == "--kv-outlier-frac") {
         params.kv_outlier_frac = std::stof(argv[++i]);
+        return true;
+    }
     if (arg == "-ictk" || arg == "--indexer-cache-type-k") {
         params.indexer_cache_type_k = argv[++i];
         return true;

@@ -516,12 +516,7 @@ struct gpt_params {
     std::map<std::string, std::string> default_template_kwargs;
 
     thinking_tokens think_tokens;
-    int reasoning_budget      = -1;
     bool no_think             = false; // LeanInfer: --no-think flag (disable thinking entirely)
-    std::string expert_log_path    = ""; // LeanInfer: --expert-log <path> records MoE top-k selections per token
-    std::string expert_policy_path = ""; // LeanInfer: --policy-file <path> applies hot/warm/cold madvise tiering
-    int         expert_prefetch_n_ahead = 0; // LeanInfer: --expert-prefetch N dynamic madvise N layers ahead
-    bool        auto_rtr = false;            // LeanInfer: --auto-rtr auto-enable no-mmap+repack when model fits in RAM
 
     bool prefill_assistant    = true;
     bool dry_run              = false;

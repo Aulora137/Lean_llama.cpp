@@ -398,8 +398,8 @@ uint64_t leankv_fingerprint_model(const struct llama_model * model) {
         (uint32_t) model->hparams.n_layer,
         (uint32_t) model->hparams.n_head(0),
         (uint32_t) model->hparams.n_head_kv(0),
-        (uint32_t) model->hparams.n_embd_head_k,
-        (uint32_t) model->hparams.n_embd_head_v,
+        (uint32_t) model->hparams.n_embd_head_k(0),   // layer-0 dims for model fingerprint
+        (uint32_t) model->hparams.n_embd_head_v(0),   // (upstream made head dims per-layer)
         (uint32_t) model->hparams.n_vocab,
         (uint32_t) model->ftype,
     };
@@ -503,7 +503,7 @@ static int leankv_autocalib_run_corpus(struct llama_context * lctx) {
 
 // Scheduler eval callback used only during auto-calibration: routes
 // captured k_cur tensors into the in-memory accumulator on `lctx`.
-static bool leankv_autocalib_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
+static int leankv_autocalib_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
     static const char * const prefix = "leankv_k_calib-";
     static const size_t prefix_len   = 15;
     if (ask) {

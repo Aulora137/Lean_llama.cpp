@@ -5923,7 +5923,7 @@ static bool expert_log_sched_eval_cb(struct ggml_tensor * t, bool ask, void * us
 // build time in llm_build_kv_store when LEANKV_CALIBRATION_DUMP=1 is set),
 // and writes raw tensor bytes to the calibration file. Layer index is
 // parsed from the name suffix.
-static bool leankv_calib_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
+static int leankv_calib_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
     static const char * const prefix = "leankv_k_calib-";
     static const size_t prefix_len   = 15;
     if (ask) {
@@ -6225,8 +6225,6 @@ static int llama_decode_internal(
             // precludes expert logging for this run — they'd need a chained callback).
             if (lctx.leankv_calib) {
                 ggml_backend_sched_set_eval_callback(lctx.sched, leankv_calib_sched_eval_cb, &lctx);
-            } else if (lctx.expert_log_file || lctx.expert_prefetch_n_ahead > 0) {
-                ggml_backend_sched_set_eval_callback(lctx.sched, expert_log_sched_eval_cb, &lctx);
             } else {
                 ggml_backend_sched_set_eval_callback(lctx.sched, lctx.cparams.cb_eval, lctx.cparams.cb_eval_user_data);
             }
@@ -7810,7 +7808,8 @@ struct llama_context * llama_init_from_model(
     // dimensions causes catastrophic PPL degradation at TQ3 and below.
     {
         const uint32_t n_head = model->hparams.n_head(0);
-        const uint32_t n_embd_head_k = model->hparams.n_embd_head_k;
+        // upstream made head dims per-layer; use layer 0 for this model-level gate
+        const uint32_t n_embd_head_k = model->hparams.n_embd_head_k(0);
         const uint32_t q_dim = (n_head > 0) ? model->hparams.n_embd / n_head : n_embd_head_k;
 
         if (q_dim < n_embd_head_k) {
@@ -8243,7 +8242,9 @@ struct llama_context * llama_init_from_model(
         if (cparams.kv_outlier_frac != 0.0f) {
             const bool auto_detect = (cparams.kv_outlier_frac < 0.0f);
             const int n_layer = (int)model->hparams.n_layer;
-            const int n_embd_head_k = model->hparams.n_embd_head_k;
+            // upstream made head dims per-layer; the outlier policy gate uses layer 0
+            // (per-layer W_K analysis below reads each layer's true dims from the tensor)
+            const int n_embd_head_k = model->hparams.n_embd_head_k(0);
 
             // Pre-populate per-layer types to the global default.
             // Will be overridden per-layer below if auto-detect changes them.
