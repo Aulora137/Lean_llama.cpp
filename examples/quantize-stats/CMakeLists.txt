@@ -1,6 +1,12 @@
 set(ARCH_FLAGS "")
 if (NOT MSVC AND GGML_NATIVE)
-    list(APPEND ARCH_FLAGS -march=native)
+    if (APPLE)
+        # Apple clang's -march=native downgrades the target and loses
+        # fullfp16, breaking f16 NEON intrinsics; -mcpu=native keeps it
+        list(APPEND ARCH_FLAGS -mcpu=native)
+    else()
+        list(APPEND ARCH_FLAGS -march=native)
+    endif()
 endif()
 message(STATUS "ARCH_FLAGS = ${ARCH_FLAGS}")
 #if (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_GENERATOR_PLATFORM_LWR MATCHES "^(x86_64|i686|amd64|x64|win32)$" OR
