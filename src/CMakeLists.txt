@@ -64,6 +64,8 @@ add_library(llama
             llama-delta-net.cpp
             leankv-calib.h
             leankv-calib.cpp
+            leankv-kvimp.h
+            leankv-kvimp.cpp
             leankv-calib-corpus.h
             leankv-codebook.h
             leankv-codebook.cpp

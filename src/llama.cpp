@@ -43,6 +43,7 @@ extern "C" {
 
 // LeanKV Phase 7: K-vector calibration dump (env-gated, zero-cost when off)
 #include "leankv-calib.h"
+#include "leankv-kvimp.h"
 
 // LeanInfer profiler (optional — only present when building alongside LeanInfer)
 #if __has_include("../../instrument/leaninfer_profiler.h")
@@ -803,6 +804,10 @@ llama_context::~llama_context() {
     // LeanKV Phase 7: finalize K-vector calibration dump (if active)
     leankv_calib_free(leankv_calib);
     leankv_calib = nullptr;
+
+    // LeanKV: finalize KV-importance collection (writes kv_stats.json)
+    leankv_kvimp_free(leankv_kvimp);
+    leankv_kvimp = nullptr;
     auto & all_contexts = llama_all_contexts();
     for (auto it = all_contexts.begin(); it != all_contexts.end(); ++it) {
         if (*it == this) {
@@ -5937,6 +5942,15 @@ static int leankv_calib_sched_eval_cb(struct ggml_tensor * t, bool ask, void * u
     return true;
 }
 
+// LeanKV: KV-importance collection callback (LEANKV_KVIMP=1); the collector
+// decides interest per node in the ask phase (attention weight matmuls only).
+static int leankv_kvimp_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
+    llama_context * lctx = static_cast<llama_context *>(user_data);
+    if (!lctx || !lctx->leankv_kvimp) return ask ? 0 : 1;
+    return ask ? leankv_kvimp_cb(lctx->leankv_kvimp, t, true)
+               : (leankv_kvimp_cb(lctx->leankv_kvimp, t, false), 1);
+}
+
 // return 0 on success
 // return positive int on warning
 // return negative int on error
@@ -6225,6 +6239,8 @@ static int llama_decode_internal(
             // precludes expert logging for this run — they'd need a chained callback).
             if (lctx.leankv_calib) {
                 ggml_backend_sched_set_eval_callback(lctx.sched, leankv_calib_sched_eval_cb, &lctx);
+            } else if (lctx.leankv_kvimp) {
+                ggml_backend_sched_set_eval_callback(lctx.sched, leankv_kvimp_sched_eval_cb, &lctx);
             } else {
                 ggml_backend_sched_set_eval_callback(lctx.sched, lctx.cparams.cb_eval, lctx.cparams.cb_eval_user_data);
             }
@@ -7832,6 +7848,10 @@ struct llama_context * llama_init_from_model(
     // LeanKV Phase 7: initialize K-vector calibration dump if
     // LEANKV_CALIBRATION_DUMP=1 is set in the environment. No-op otherwise.
     ctx->leankv_calib = leankv_calib_init();
+
+    // LeanKV: initialize KV-importance collection if LEANKV_KVIMP=1 is set.
+    // Geometry (incl. Gemma-4 KV sharing) is derived from model hparams.
+    ctx->leankv_kvimp = leankv_kvimp_init(*model);
 
     // add devices to ctx->cparams from model
     for (int i : model->devices) {

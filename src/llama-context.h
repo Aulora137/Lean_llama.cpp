@@ -333,6 +333,11 @@ struct llama_context {
     // offline SVD analysis. See src/leankv-calib.h for format.
     struct leankv_calib_state * leankv_calib = nullptr;
 
+    // LeanKV: KV-importance calibration collector (kv_stats.json for the
+    // offline per-head bit allocator). Enabled via LEANKV_KVIMP=1.
+    // See src/leankv-kvimp.h.
+    struct leankv_kvimp_state * leankv_kvimp = nullptr;
+
     // LeanInfer Phase 3b: dynamic expert prefetch
     // After layer N's gating, madvise(WILLNEED) the selected experts in the next
     // expert_prefetch_n_ahead layers. 0 = disabled.
