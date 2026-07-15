@@ -23107,12 +23107,19 @@ static void ggml_compute_forward_delta_net_f32(
         return;
     }
 
+    // Reference implementation. Must stay semantically identical to the
+    // fused paths (iqk_fused_delta_net_*_impl, delta-net.cu): raw q/k
+    // (normalization happens in the graph), v addressed via its strides,
+    // g/beta laid out heads-fast ([n_heads, n_tokens, n_seqs] physical).
+    const size_t vnb1 = src2->nb[1]/sizeof(float);
+    const size_t vnb2 = src2->nb[2]/sizeof(float);
+    const size_t vnb3 = src2->nb[3]/sizeof(float);
+
     const int64_t total_heads = n_heads * n_seqs;
     const int64_t heads_per_thread = (total_heads + nth - 1) / nth;
     const int64_t h_start = ith * heads_per_thread;
     const int64_t h_end = (h_start + heads_per_thread < total_heads) ? h_start + heads_per_thread : total_heads;
 
-    const float eps = 1e-12f;
     const float scale = 1.0f / sqrtf((float) head_dim);
 
     float * v_new_buf = (float *) malloc(head_dim * sizeof(float));
@@ -23123,10 +23130,9 @@ static void ggml_compute_forward_delta_net_f32(
         const int64_t head_idx  = h_idx % n_heads;
         const int64_t head_idx_kq = repeat_type == 0 ? head_idx / gqa_ratio : head_idx % (n_heads/gqa_ratio);
 
-        const int64_t qkv_head_offset  = batch_idx * (head_dim * n_tokens * n_heads) + head_idx * (head_dim * n_tokens);
         const int64_t qkv_head_offset_kq = batch_idx * (head_dim * n_tokens * n_heads/gqa_ratio) + head_idx_kq * (head_dim * n_tokens);
         const int64_t qkv_token_stride = head_dim;
-        const int64_t g_head_offset    = batch_idx * (n_tokens * n_heads) + head_idx * n_tokens;
+        const int64_t g_batch_offset   = batch_idx * (n_tokens * n_heads);
         const int64_t state_head_offset = batch_idx * (head_dim * head_dim * n_heads) + head_idx * (head_dim * head_dim);
         const int64_t out_head_offset  = batch_idx * (head_dim * n_heads * n_tokens) + head_idx * head_dim;
         const int64_t out_token_stride = head_dim * n_heads;
@@ -23141,27 +23147,19 @@ static void ggml_compute_forward_delta_net_f32(
         for (int64_t t = 0; t < n_tokens; ++t) {
             const float * q_t = q_data + qkv_head_offset_kq + t * qkv_token_stride;
             const float * k_t = k_data + qkv_head_offset_kq + t * qkv_token_stride;
-            const float * v_t = v_data + qkv_head_offset + t * qkv_token_stride;
+            const float * v_t = v_data + batch_idx * vnb3 + head_idx * vnb2 + t * vnb1;
 
-            const float g_val    = g_data[g_head_offset + t];
-            const float beta_raw = beta_data[g_head_offset + t];
-
-            float q_norm_sq = 0.0f;
-            float k_norm_sq = 0.0f;
-            for (int64_t i = 0; i < head_dim; ++i) {
-                q_norm_sq += q_t[i] * q_t[i];
-                k_norm_sq += k_t[i] * k_t[i];
-            }
-            const float q_norm_inv = 1.0f / sqrtf(q_norm_sq + eps);
-            const float k_norm_inv = 1.0f / sqrtf(k_norm_sq + eps);
+            const float g_val    = g_data[g_batch_offset + t * n_heads + head_idx];
+            const float beta_raw = beta_data[g_batch_offset + t * n_heads + head_idx];
 
             const float beta_val = 1.0f / (1.0f + expf(-beta_raw));
             const float decay    = expf(fminf(g_val, 50.0f));
 
-            float attn_score = 0.0f;
+            float kq_sum = 0.0f;
             for (int64_t i = 0; i < head_dim; ++i) {
-                attn_score += (k_t[i] * k_norm_inv) * (q_t[i] * q_norm_inv * scale);
+                kq_sum += q_t[i] * k_t[i];
             }
+            const float attn_score = kq_sum * scale;
 
             float * out_t = out_data + out_head_offset + t * out_token_stride;
 
@@ -23170,21 +23168,19 @@ static void ggml_compute_forward_delta_net_f32(
                 float out_val = 0.0f;
 
                 for (int64_t col = 0; col < head_dim; ++col) {
-                    const float k_col = k_t[col];
-                    const float q_col = q_t[col];
                     const float s = state[row + col * head_dim];
 
-                    v_prime += s * k_col;
-                    out_val += s * q_col;
+                    v_prime += s * k_t[col];
+                    out_val += s * q_t[col];
                 }
 
-                const float v_new = v_t[row] * beta_val - v_prime * beta_val * decay * k_norm_inv;
+                const float v_new = v_t[row] * beta_val - v_prime * beta_val * decay;
                 v_new_buf[row] = v_new;
-                out_t[row] = out_val * decay * q_norm_inv * scale + v_new * attn_score;
+                out_t[row] = out_val * decay * scale + v_new * attn_score;
             }
 
             for (int64_t col = 0; col < head_dim; ++col) {
-                const float k_col = k_t[col] * k_norm_inv;
+                const float k_col = k_t[col];
                 for (int64_t row = 0; row < head_dim; ++row) {
                     float s = state[row + col * head_dim];
                     s = decay * s + v_new_buf[row] * k_col;

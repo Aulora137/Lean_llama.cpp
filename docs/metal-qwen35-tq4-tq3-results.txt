@@ -74,6 +74,8 @@ Absolute PPL vs April CUDA baselines: DOES NOT MATCH (+~1.4 uniform)
      is shifted (model file or arch-path difference).
 
   Also found: the generic C fallback for GGML_OP_DELTA_NET
-  (ggml_compute_forward_delta_net_f32) is broken on all platforms —
-  garbage on ARM, crash on x86. Only the fused iqk paths (NEON/AVX2)
-  and CUDA are live. Debug guard: LEANKV_NO_FUSED_DELTA_NET=1.
+  (ggml_compute_forward_delta_net_f32) had drifted from the fused
+  contract (garbage on ARM, crash on x86) — fixed in this commit
+  ("ggml: fix generic C fallback for GGML_OP_DELTA_NET"); it now
+  matches the fused paths to 1-2 ulp on both arm64 and x86_64.
+  Debug guard: LEANKV_NO_FUSED_DELTA_NET=1 forces the C path.
