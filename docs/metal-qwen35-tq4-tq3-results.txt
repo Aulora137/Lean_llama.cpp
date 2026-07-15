@@ -60,7 +60,22 @@ Absolute PPL vs April CUDA baselines: DOES NOT MATCH (+~1.4 uniform)
   (identical), thread count (identical), IQK fp16 paths (Mistral 7B
   Metal 3ch = 6.6397 vs April 6.6392, exact).
 
-  Remaining suspects (need the Linux boxes to check):
+  RESOLVED 2026-07-15 (later the same day): the M2's wiki.test.raw was
+  a NON-CANONICAL variant (1,292,014 bytes, md5 9c7a807f..., extra
+  newline runs), silently fetched on Apr 14 20:25:35 — four seconds
+  before the April overnight Metal run started. The Ryzen file is the
+  canonical wikitext-2-raw (1,290,590 bytes, md5 7c0137fc...). Both
+  tokenize to 145 chunks, which masked the difference. With the
+  canonical file copied over, M2 matches Ryzen chunk-for-chunk:
+  [1] 6.6049 CPU / 6.6122 Metal vs Ryzen 6.6035; [3] 7.9117/7.9045 vs
+  7.9080. ALL RESULTS IN THIS FILE ARE ON THE VARIANT DATASET — see
+  metal-qwen35-tq4-tq3-results-canonical.txt for the definitive run.
+  NOTE: the Apr 14-15 Mistral Metal TQ4/TQ3 gold fill-in (5.1103 /
+  5.1743) also ran on the variant dataset and needs a re-run before
+  comparing against canonical-dataset numbers.
+
+  Original suspects (for the record — both were checked and only the
+  dataset differed; model file hashes matched exactly):
   1. Model file revision drift — M2 copy (sha256 03b74727a860a56338
      e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8, 5680522464 bytes,
      downloaded Mar 28) byte-size-matches CURRENT unsloth

@@ -16,7 +16,7 @@ set -e
 MODEL="${1:-$HOME/LeanInfer/models/qwen35-9b-instruct-q4_k_m.gguf}"
 WIKI="${2:-$HOME/Lean_llama.cpp/wikitext-2-raw/wiki.test.raw}"
 BIN="./build/bin/llama-perplexity"
-OUT="docs/metal-qwen35-tq4-tq3-results.txt"
+OUT="docs/metal-qwen35-tq4-tq3-results-canonical.txt"
 
 if [ ! -f "$MODEL" ]; then
     echo "ERROR: Model not found: $MODEL"
