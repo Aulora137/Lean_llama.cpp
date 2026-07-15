@@ -23095,7 +23095,12 @@ static void ggml_compute_forward_delta_net_f32(
         GGML_ASSERT(src6->ne[0] >= (n_tokens - 1)*state_step_stride);
     }
 
-    if (iqk_fused_delta_net(head_dim, n_heads, gqa_ratio, repeat_type, n_tokens, n_seqs,
+    static int no_fused_delta_net = -1;
+    if (no_fused_delta_net < 0) {
+        no_fused_delta_net = getenv("LEANKV_NO_FUSED_DELTA_NET") != NULL;
+    }
+    if (!no_fused_delta_net &&
+        iqk_fused_delta_net(head_dim, n_heads, gqa_ratio, repeat_type, n_tokens, n_seqs,
                 src2->nb[1]/sizeof(float), src2->nb[2]/sizeof(float), src2->nb[3]/sizeof(float),
                 q_data, k_data, v_data, g_data, beta_data, state_in,
                 out_data, state_working, saved_steps, (int) state_step_stride, ith, nth)) {
