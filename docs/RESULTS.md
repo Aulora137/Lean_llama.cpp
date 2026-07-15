@@ -92,10 +92,32 @@ deployed on the Aulora bitcoin node with TQ4_0 KV cache.
 
 ## Production Deployment
 
-The Aulora node runs Qwen 3.5-9B (Q4_K_M) with:
-```
--ctk tq4_0 -ctv f16 -fa on --ctx-size 8192
-```
+The Aulora/Rikuri node (Ryzen 7 7735U, CPU-only) runs three llama-server
+instances from this tree (as of 2026-07-14):
 
-KV cache: 164 MiB (36 MiB K + 128 MiB V), down from 256 MiB with F16.
-Quality impact: +0.07% PPL. Speed: 6.49 tok/s on Ryzen 7 7735U (CPU-only).
+| Port | Model | KV cache |
+|------|-------|----------|
+| :8080 | Gemma 3-4B Q4_K_M (chat) | tq4_0 K + V |
+| :8081 | Qwen 3.5-2B Q4_K_M (intent router) | tq4_0 K + V, `-fa on` |
+| :8082 | bge-base-en-v1.5 (embeddings) | n/a |
+
+## Upstream Merge Regression Gate — 2026-07-14
+
+After merging upstream ik_llama.cpp @ 6d78a87c (340 commits, ~3 months of
+drift) plus the deltanet F16 state-cache fix (508ad76e), the full gate was
+re-run on the same hardware, model, and eval as the April baselines
+(Qwen 3.5-9B Q4_K_M, WikiText-2 raw, 145 chunks, ctx 2048, CPU AVX2).
+K and V both quantized — compare against the April `_TQ4_TQ4` / `_TQ3_TQ3`
+logs, not the K-only table rows above.
+
+| KV config | Post-merge PPL | April PPL | Result |
+|-----------|---------------|-----------|--------|
+| F16 / F16 | 7.2591 | 7.2591 | exact match |
+| TQ4_0 / TQ4_0 | 7.2912 | 7.2912 | exact match |
+| TQ3_0 / TQ3_0 | 7.3409 | 7.3472 | -0.09% (slightly better) |
+
+KV self size matched April exactly (18 MiB TQ4, 14 MiB TQ3, 64 MiB F16).
+Hadamard auto-enable and the calibration codebook engaged normally.
+Raw logs: `LeanKV/prototype/eval/results/logs/postmerge-2026-07/` (local).
+CUDA and Metal TQ kernels are carried in this tree but not yet re-validated
+post-merge (need 4090 / M2 builds).
