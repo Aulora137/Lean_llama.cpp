@@ -12,8 +12,8 @@ fetched onto the M2 on 2026-04-14 and shifted Qwen 3.5-9B F16 PPL by
 +1.27 while still producing the same 145-chunk count — chunk-count
 equality does NOT prove dataset equality. Every M2 number from Apr 14
 to Jul 15 ran on the variant, including the Apr 14-15 Mistral Metal
-TQ4/TQ3 gold fill-in; canonical re-run in progress
-(docs/metal-tq4-tq3-results-canonical.txt).
+TQ4/TQ3 gold fill-in — re-run on canonical 2026-07-15, see the gold
+table below (docs/metal-tq4-tq3-results-canonical.txt).
 
 **Canonical-dataset gold (2026-07-15, M2 Metal, Qwen 3.5-9B, 145ch):**
 F16/F16 7.2533 (Ryzen CPU gate: 7.2591, delta 0.006) ·
@@ -29,13 +29,13 @@ Both backends matched within ±0.02 PPL on the Phase 3.5 overnight run.
 | TQ2_0/F16 | 6.4229 | 6.4120 | **6.40-6.44** | ±0.05 of 6.417 |
 | V1 adaptive (1.5×) | 5.9940 | 6.0135 | **5.99-6.02** | ±0.05 of 6.004 |
 | TQ2_1/F16 | 5.9784 | 5.9883 | **5.97-6.00** | ±0.05 of 5.983 |
-| TQ4_0/F16 | ⏳ pending | ⏳ pending | **~5.21** ‡ | — |
-| TQ3_0/F16 | ⏳ pending | ⏳ pending | **~5.32** ‡ | — |
+| TQ4_0/F16 | — | 5.1781 | 5.1781 (actual) | ±0.05 of 5.178 |
+| TQ3_0/F16 | — | 5.2446 | 5.2464 (actual) | ±0.05 of 5.245 |
 
-‡ TQ4/TQ3 estimates come from 3-chunk ratios across all tested backends:
-TQ4 shows ~+1% over F16 and TQ3 shows ~+3% over F16 consistently on
-TinyShakespeare and WikiText-2 3-chunk. Tonight's M2 Metal run will
-replace these estimates with actual gold-standard numbers.
+‡ resolved 2026-07-15: gold numbers are the canonical-dataset Metal
+re-run (docs/metal-tq4-tq3-results-canonical.txt). Metal TQ4 matches
+CUDA to four decimals; TQ3 within 0.002. The original Apr 14-15 fill-in
+(5.1103/5.1743) ran on the non-canonical dataset and is void.
 
 **V1 adaptive layer distribution** (should be identical across backends):
 - 11 × TQ2_0 (flat by 1.5× threshold)

@@ -8,7 +8,7 @@ Lower PPL is better. Delta is relative to F16 baseline on the same backend.
 | Model | Backend | F16 PPL | TQ4_0 PPL | Delta | K Cache |
 |-------|---------|---------|-----------|-------|---------|
 | Mistral 7B | CUDA (RTX 4090) | 5.1638 | 5.1781 | +0.28% | 36 MiB (was 128) |
-| Mistral 7B | Metal (M2 Air) | 5.1678 | 5.1103 † | **-1.1%** † | 36 MiB |
+| Mistral 7B | Metal (M2 Air, 2026-07 †) | 5.1678 | 5.1781 | +0.20% | 36 MiB |
 | Qwen3-8B | CUDA | 8.6097 | 8.7932 | +2.13% | 40.5 MiB (was 144) |
 | Gemma 3-4B | CUDA | 12.5221 | 12.3760 | **-1.17%** | 38.25 MiB (was 136) |
 | Llama 3-8B | CUDA | 7.4059 | 7.4197 | +0.19% | 36 MiB (was 128) |
@@ -17,12 +17,13 @@ Lower PPL is better. Delta is relative to F16 baseline on the same backend.
 | Qwen 3.5-9B | CPU (AVX2, Ryzen 7) | 7.2591 | 7.2722 | +0.02% | 18 MiB (was 64) |
 | Qwen 3.5-9B | Metal (M2 Air, 2026-07) | 7.2533 | 7.2965 | +0.60% | 9 MiB (was 32) |
 
-† Dataset artifact: the Apr 14-15 Mistral Metal TQ4/TQ3 runs used a
-non-canonical wiki.test.raw fetched seconds before the run, while the
-F16 baseline in the same row predates the swap (see the ANALYSIS
-section of docs/metal-qwen35-tq4-tq3-results.txt). The apparent
-"improvement" is not real; canonical re-run in progress
-(docs/metal-tq4-tq3-results-canonical.txt).
+† Re-run 2026-07-15 on the canonical dataset
+(docs/metal-tq4-tq3-results-canonical.txt). The original Apr 14-15
+fill-in used a non-canonical wiki.test.raw fetched seconds before the
+run (TQ4 5.1103 / TQ3 5.1743, which faked a -1.1% TQ4 "improvement"
+against the pre-swap F16 baseline — see the ANALYSIS section of
+docs/metal-qwen35-tq4-tq3-results.txt). Canonical Metal TQ4 matches
+CUDA to 4 decimals (5.1781 vs 5.1781).
 
 TQ4_0 is near-lossless on every tested architecture. On Gemma and
 Qwen3-4B it actually **improves** PPL — the Hadamard rotation acts as a
@@ -35,7 +36,7 @@ K cache compression: **3.6x** vs F16.
 | Model | Backend | F16 PPL | TQ3_0 PPL | Delta | K Cache |
 |-------|---------|---------|-----------|-------|---------|
 | Mistral 7B | CUDA (RTX 4090) | 5.1638 | 5.2464 | +1.60% | 28 MiB (was 128) |
-| Mistral 7B | Metal (M2 Air) | 5.1678 | 5.1743 † | +0.13% † | 28 MiB |
+| Mistral 7B | Metal (M2 Air, 2026-07 †) | 5.1678 | 5.2446 | +1.49% | 28 MiB |
 | Qwen3-8B | CUDA | 8.6097 | 8.8888 | +3.24% | 31.5 MiB (was 144) |
 | Gemma 3-4B | CUDA | 12.5221 | 12.3214 | **-1.60%** | 29.75 MiB (was 136) |
 | Llama 3-8B | CUDA | 7.4059 | 7.5526 | +1.98% | 28 MiB (was 128) |
@@ -55,14 +56,13 @@ K cache compression: **4.6x** vs F16.
 | Config | CPU (AVX2) | Metal (M2) | CUDA (4090) | Spread |
 |--------|-----------|------------|-------------|--------|
 | F16 | 5.1627 | 5.1678 | 5.1638 | 0.005 |
-| TQ4_0 | — | 5.1103 † | 5.1781 | 0.068 † |
-| TQ3_0 | — | 5.1743 † | 5.2464 | 0.072 † |
+| TQ4_0 | — | 5.1781 | 5.1781 | 0.000 |
+| TQ3_0 | — | 5.2446 | 5.2464 | 0.002 |
 
-The F16 row is consistent across all three backends. The Metal TQ cells
-are dataset-tainted (see † above) and their spread vs CUDA is not
-meaningful until the canonical re-run lands. For a clean cross-backend
-TQ comparison on the canonical dataset, see Qwen 3.5-9B: Metal F16
-7.2533 vs Ryzen CPU 7.2591 (delta 0.006), TQ deltas consistent
+All three backends are consistent. Metal TQ numbers are the 2026-07-15
+canonical-dataset re-run; TQ4 matches CUDA to four decimals and TQ3 is
+within 0.002. Qwen 3.5-9B gives the same picture on the hybrid arch:
+Metal F16 7.2533 vs Ryzen CPU 7.2591 (delta 0.006)
 (docs/metal-qwen35-tq4-tq3-results-canonical.txt).
 
 ## TQ2 — Not Viable
