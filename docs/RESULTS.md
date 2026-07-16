@@ -132,5 +132,6 @@ logs, not the K-only table rows above.
 KV self size matched April exactly (18 MiB TQ4, 14 MiB TQ3, 64 MiB F16).
 Hadamard auto-enable and the calibration codebook engaged normally.
 Raw logs: `LeanKV/prototype/eval/results/logs/postmerge-2026-07/` (local).
-CUDA and Metal TQ kernels are carried in this tree but not yet re-validated
-post-merge (need 4090 / M2 builds).
+Metal TQ kernels re-validated post-merge on M2 (2026-07-15, canonical
+dataset — see the Metal rows and dagger note above). CUDA TQ kernels are
+carried in this tree but not yet re-validated post-merge (need a 4090 build).
