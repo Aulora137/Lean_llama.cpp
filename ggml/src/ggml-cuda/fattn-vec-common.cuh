@@ -617,7 +617,6 @@ static __device__ __forceinline__ T vec_dot_fattn_vec_KQ_tq2_1(
     return sum;
 }
 
-template <typename Tds>
 // ni = number of valid lanes for this chunk (compile-time). For a chunk that fully covers
 // WARP_SIZE int32 words ni == WARP_SIZE and every guard below is provably always-true, so the
 // compiler eliminates it (byte-identical to the unguarded version). For a ragged tail chunk
