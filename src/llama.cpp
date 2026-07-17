@@ -1112,6 +1112,10 @@ static bool llama_kv_cache_init(
     if ((int)cache.type_k_l.size() != n_layer) {
         cache.type_k_l.assign(n_layer, type_k);
     }
+    // LeanKV: same contract for per-layer V types (bit-plan consumer).
+    if ((int)cache.type_v_l.size() != n_layer) {
+        cache.type_v_l.assign(n_layer, type_v);
+    }
 
     cache.cells.clear();
     cache.cells.resize(kv_size);
@@ -1387,6 +1391,16 @@ static bool llama_kv_cache_init(
             }
             if (model.arch != LLM_ARCH_OPENPANGU && type_v_last != type_v && n_v_last > 0 && i >= n_layer - n_v_last) {
                 this_type_v = type_v_last;
+            }
+            // LeanKV: per-layer V types (bit-plan consumer) take precedence over
+            // the first/last range overrides; fold the effective type back so
+            // downstream consumers see the true per-layer type.
+            if (i < (int)cache.type_v_l.size()) {
+                if (cache.type_v_l[i] != type_v) {
+                    this_type_v = cache.type_v_l[i];
+                } else {
+                    cache.type_v_l[i] = this_type_v;
+                }
             }
             if (this_type_v != type_v) {
                 LLAMA_LOG_INFO("================= Setting V-cache type in layer %2d to %s\n", i, ggml_type_name(this_type_v));
@@ -5951,6 +5965,51 @@ static int leankv_kvimp_sched_eval_cb(struct ggml_tensor * t, bool ask, void * u
                : (leankv_kvimp_cb(lctx->leankv_kvimp, t, false), 1);
 }
 
+// LeanKV: bit-plan consumer helpers (LEANKV_KV_PLAN). The plan file is the
+// output of kv_bit_allocator.py --emit-types: one "<layer> <ktype> <vtype>"
+// line per layer ('#' comments allowed), e.g. "7 tq3_0 tq4_0".
+static ggml_type leankv_type_from_name(const char * name) {
+    for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+        const char * n = ggml_type_name((ggml_type) t);
+        if (n && strcmp(n, name) == 0) return (ggml_type) t;
+    }
+    return GGML_TYPE_COUNT;
+}
+
+static bool leankv_load_kv_plan(const char * path, int n_layer,
+                                ggml_type def_k, ggml_type def_v,
+                                std::vector<ggml_type> & k_l, std::vector<ggml_type> & v_l) {
+    FILE * f = fopen(path, "r");
+    if (!f) {
+        LLAMA_LOG_ERROR("leankv: cannot open kv plan '%s'\n", path);
+        return false;
+    }
+    if ((int) k_l.size() != n_layer) k_l.assign(n_layer, def_k);
+    if ((int) v_l.size() != n_layer) v_l.assign(n_layer, def_v);
+    char line[256], kbuf[64], vbuf[64];
+    int il, n_set = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        if (sscanf(line, "%d %63s %63s", &il, kbuf, vbuf) != 3) continue;
+        if (il < 0 || il >= n_layer) {
+            LLAMA_LOG_WARN("leankv: kv plan layer %d out of range — skipped\n", il);
+            continue;
+        }
+        const ggml_type tk = leankv_type_from_name(kbuf);
+        const ggml_type tv = leankv_type_from_name(vbuf);
+        if (tk == GGML_TYPE_COUNT || tv == GGML_TYPE_COUNT) {
+            LLAMA_LOG_WARN("leankv: kv plan layer %d has unknown type (%s / %s) — skipped\n", il, kbuf, vbuf);
+            continue;
+        }
+        k_l[il] = tk;
+        v_l[il] = tv;
+        ++n_set;
+    }
+    fclose(f);
+    LLAMA_LOG_INFO("leankv: kv plan '%s' applied to %d of %d layers\n", path, n_set, n_layer);
+    return n_set > 0;
+}
+
 // return 0 on success
 // return positive int on warning
 // return negative int on error
@@ -7818,30 +7877,11 @@ struct llama_context * llama_init_from_model(
         }
     }
 
-    // LeanKV: auto-detect Q/KV dimension mismatch and cap TQ aggressiveness.
-    // Models where n_embd/n_head < n_embd_head_k (e.g., Qwen3-4B: 80 vs 128)
-    // have rank-deficient KV subspaces — quantization noise in the unused
-    // dimensions causes catastrophic PPL degradation at TQ3 and below.
-    {
-        const uint32_t n_head = model->hparams.n_head(0);
-        // upstream made head dims per-layer; use layer 0 for this model-level gate
-        const uint32_t n_embd_head_k = model->hparams.n_embd_head_k(0);
-        const uint32_t q_dim = (n_head > 0) ? model->hparams.n_embd / n_head : n_embd_head_k;
-
-        if (q_dim < n_embd_head_k) {
-            auto downgrade = [&](enum ggml_type & type, const char * cache_name) {
-                if (type == GGML_TYPE_TQ3_0 || type == GGML_TYPE_TQ2_0 || type == GGML_TYPE_TQ2_1) {
-                    LLAMA_LOG_WARN("llama_init_from_model: this model has Q-dim (%u) < KV head-dim (%u) — "
-                                  "rank-deficient KV subspace makes aggressive quantization unreliable. "
-                                  "Downgrading %s-cache from %s to tq4_0\n",
-                                  q_dim, n_embd_head_k, cache_name, ggml_type_name(type));
-                    type = GGML_TYPE_TQ4_0;
-                }
-            };
-            downgrade(params.type_k, "K");
-            downgrade(params.type_v, "V");
-        }
-    }
+    // LeanKV: the Q/KV dimension-mismatch gate is now PER-LAYER-TYPE and runs
+    // just before kv_cache_init (see "per-layer-type Q-dim rank gate" below) —
+    // hybrid-head-dim models (Gemma-4: 256 local / 512 global) can be safe on
+    // one layer type and rank-bounded on the other, so a layer-0 global gate
+    // would misjudge them.
 
     llama_context * ctx = new llama_context(*model);
 
@@ -8515,9 +8555,58 @@ struct llama_context * llama_init_from_model(
             }
         }
 
-        // Now create the KV cache tensors. If auto-detect ran above,
-        // type_k_l is pre-populated with per-layer adaptive types and
-        // kv_cache_init will honor them when allocating each layer's K tensor.
+        // LeanKV: offline bit-plan consumer. LEANKV_KV_PLAN=<file> applies a
+        // per-layer K/V cache-type plan (kv_bit_allocator.py --emit-types).
+        // Plan entries override -ctk/-ctv defaults AND outlier auto-detect
+        // pre-population — an explicit plan is explicit intent.
+        bool kv_plan_loaded = false;
+        if (const char * plan_path = getenv("LEANKV_KV_PLAN")) {
+            kv_plan_loaded = leankv_load_kv_plan(plan_path, (int) model->hparams.n_layer,
+                                                 type_k, type_v,
+                                                 ctx->kv_self.type_k_l, ctx->kv_self.type_v_l);
+        }
+
+        // LeanKV: per-layer-type Q-dim rank gate (replaces the old layer-0
+        // global gate). A K/Q head cannot carry more active dims than
+        // n_embd/n_head; TQ3-and-below on rank-bounded layers is unreliable
+        // (Qwen3-4B lesson; Gemma-4 512-dim global heads are the structural
+        // case). With an explicit plan loaded the gate only WARNS — research
+        // plans must not be silently rewritten. LEANKV_NO_QDIM_GATE=1 bypasses.
+        {
+            const char * ng = getenv("LEANKV_NO_QDIM_GATE");
+            const bool gate_on = !(ng && ng[0] == '1');
+            const int n_layer_g = (int) model->hparams.n_layer;
+            auto is_aggressive = [](ggml_type t) {
+                return t == GGML_TYPE_TQ3_0 || t == GGML_TYPE_TQ2_0 || t == GGML_TYPE_TQ2_1;
+            };
+            int n_flagged = 0;
+            for (int il = 0; gate_on && il < n_layer_g; ++il) {
+                const uint32_t nh = model->hparams.n_head(il);
+                if (nh == 0) continue;                       // recurrent/DeltaNet layer
+                const uint32_t hd    = model->hparams.n_embd_head_k(il);
+                const uint32_t q_dim = model->hparams.n_embd / nh;
+                if (q_dim >= hd) continue;
+                const ggml_type cur_k = il < (int) ctx->kv_self.type_k_l.size() ? ctx->kv_self.type_k_l[il] : type_k;
+                const ggml_type cur_v = il < (int) ctx->kv_self.type_v_l.size() ? ctx->kv_self.type_v_l[il] : type_v;
+                if (!is_aggressive(cur_k) && !is_aggressive(cur_v)) continue;
+                ++n_flagged;
+                if (kv_plan_loaded) continue;                // warn-only under an explicit plan
+                if ((int) ctx->kv_self.type_k_l.size() != n_layer_g) ctx->kv_self.type_k_l.assign(n_layer_g, type_k);
+                if ((int) ctx->kv_self.type_v_l.size() != n_layer_g) ctx->kv_self.type_v_l.assign(n_layer_g, type_v);
+                if (is_aggressive(ctx->kv_self.type_k_l[il])) ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ4_0;
+                if (is_aggressive(ctx->kv_self.type_v_l[il])) ctx->kv_self.type_v_l[il] = GGML_TYPE_TQ4_0;
+            }
+            if (n_flagged > 0) {
+                LLAMA_LOG_WARN("%s: %d layer(s) have q_dim < head_dim (rank-bounded KV subspace); %s\n",
+                        __func__, n_flagged,
+                        kv_plan_loaded ? "explicit kv plan loaded — NOT rewriting (verify these layers)"
+                                       : "aggressive TQ types downgraded to tq4_0 on those layers (LEANKV_NO_QDIM_GATE=1 to bypass)");
+            }
+        }
+
+        // Now create the KV cache tensors. If auto-detect, a kv plan, or the
+        // rank gate ran above, type_k_l / type_v_l are pre-populated and
+        // kv_cache_init will honor them when allocating each layer's tensors.
         if (!llama_kv_cache_init(ctx->kv_self, ctx, type_k, type_v, params.idx_type_k, kv_size, cparams.offload_kqv,
                     params.type_k_first, params.type_k_last, params.type_v_first, params.type_v_last,
                     params.n_k_first, params.n_k_last, params.n_v_first, params.n_v_last)) {

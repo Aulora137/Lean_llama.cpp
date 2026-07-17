@@ -119,6 +119,11 @@ struct llama_kv_cache {
     // Empty when not using auto-detect (falls back to uniform cache.type_k).
     std::vector<ggml_type> type_k_l;
 
+    // LeanKV: per-layer V-cache type (bit-plan consumer, LEANKV_KV_PLAN).
+    // Same contract as type_k_l: pre-populate before kv_cache_init to
+    // override the global type_v per layer; empty -> uniform cache.type_v.
+    std::vector<ggml_type> type_v_l;
+
     // LeanKV: per-layer outlier channel permutation (for mixed-precision KV)
     // Populated during KV cache init when kv_outlier_frac > 0.
     // Used by ggml_map_custom1 ops in the attention graph.
