@@ -162,3 +162,13 @@ a.out
 a.out.*
 .dev
 .github
+
+# LeanKV ablation scratch (derived/regenerable; base_f16.kld is 77 GB)
+/base_f16.kld
+/kv_stats*.json
+/plan_*.types
+/kld_*.log
+/kld_*_status.txt
+/calib*.txt
+/bit_plan.json
+/run_kld_*.sh
