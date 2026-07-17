@@ -360,12 +360,19 @@ def report(plan: dict, stats: dict) -> None:
 
 
 ARMS = {
-    "A1": dict(use_importance=False, use_reuse=False, use_entropy=False),
-    "A2": dict(use_importance=False, use_reuse=False, use_entropy=True),
-    "A3": dict(use_importance=True,  use_reuse=False, use_entropy=False),
-    "A4": dict(use_importance=True,  use_reuse=False, use_entropy=True),
-    "A5": dict(use_importance=True,  use_reuse=False, use_entropy=True, prope_aware=True),
-    "A6": dict(use_importance=True,  use_reuse=True,  use_entropy=True, prope_aware=True),
+    "A1":  dict(use_importance=False, use_reuse=False, use_entropy=False),
+    # A1R: the post-ablation reuse arm (2026-07). The Gemma 3-4B ablation showed
+    # magnitude-importance is redundant with variance (log-corr 0.82, A3 loses
+    # to A1 by 18% at 30 sigma) — so the E2B cross-layer-sharing test isolates
+    # the reuse signal on top of the WINNING baseline, without importance:
+    # value = var * reuse^w_reuse. reuse_count comes from kvimp geometry
+    # (E2B: consumers per owned tensor). Use with --norm robust.
+    "A1R": dict(use_importance=False, use_reuse=True,  use_entropy=False),
+    "A2":  dict(use_importance=False, use_reuse=False, use_entropy=True),
+    "A3":  dict(use_importance=True,  use_reuse=False, use_entropy=False),
+    "A4":  dict(use_importance=True,  use_reuse=False, use_entropy=True),
+    "A5":  dict(use_importance=True,  use_reuse=False, use_entropy=True, prope_aware=True),
+    "A6":  dict(use_importance=True,  use_reuse=True,  use_entropy=True, prope_aware=True),
 }
 
 
