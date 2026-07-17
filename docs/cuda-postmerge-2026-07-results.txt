@@ -1,0 +1,53 @@
+=== CUDA post-merge verification — 41d225de ===
+Date: 2026-07-17 (UTC) · GPU: NVIDIA GeForce RTX 4090 (48 GB variant, sm_89)
+Host: Vast.ai rental, CUDA 13.2, driver 595.71.05, GCC 11.4, CMAKE_CUDA_ARCHITECTURES=89
+dataset md5: 7c0137fc034ddbc56a296bce31b4f7fb (canonical, 1,290,590 bytes)
+model Qwen3.5-9B-Q4_K_M.gguf sha256: 03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8
+  (== Ryzen reference copy — absolute cross-backend comparisons valid)
+model Mistral-7B-Instruct-v0.3-Q4_K_M.gguf sha256: 1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6
+
+--- Qwen3.5-9B-Q4_K_M.gguf F16/F16 ---
+llama_init_from_model: KV self size  =   64.00 MiB, K (f16):   32.00 MiB, V (f16):   32.00 MiB
+Final estimate: PPL over 145 chunks for n_ctx=2048 = 7.1404 +/- 0.04631
+--- Qwen3.5-9B-Q4_K_M.gguf TQ4/F16 ---
+llama_init_from_model: KV self size  =   41.00 MiB, K (tq4_0):    9.00 MiB, V (f16):   32.00 MiB
+Final estimate: PPL over 145 chunks for n_ctx=2048 = 7.1453 +/- 0.04636
+--- Qwen3.5-9B-Q4_K_M.gguf TQ3/F16 ---
+llama_init_from_model: KV self size  =   39.00 MiB, K (tq3_0):    7.00 MiB, V (f16):   32.00 MiB
+Final estimate: PPL over 145 chunks for n_ctx=2048 = 7.1663 +/- 0.04651
+--- Qwen3.5-9B-Q4_K_M.gguf TQ4/TQ4 ---
+llama_init_from_model: KV self size  =   18.00 MiB, K (tq4_0):    9.00 MiB, V (tq4_0):    9.00 MiB
+Final estimate: PPL over 145 chunks for n_ctx=2048 = 7.1622 +/- 0.04650
+--- Qwen3.5-9B-Q4_K_M.gguf TQ3/TQ3 ---
+llama_init_from_model: KV self size  =   14.00 MiB, K (tq3_0):    7.00 MiB, V (tq3_0):    7.00 MiB
+Final estimate: PPL over 145 chunks for n_ctx=2048 = 7.2026 +/- 0.04667
+--- Mistral-7B-Instruct-v0.3-Q4_K_M.gguf F16/F16 ---
+llama_init_from_model: KV self size  =  256.00 MiB, K (f16):  128.00 MiB, V (f16):  128.00 MiB
+Final estimate: PPL over 160 chunks for n_ctx=2048 = 5.1638 +/- 0.02886
+--- Mistral-7B-Instruct-v0.3-Q4_K_M.gguf TQ4/F16 ---
+llama_init_from_model: KV self size  =  164.00 MiB, K (tq4_0):   36.00 MiB, V (f16):  128.00 MiB
+Final estimate: PPL over 160 chunks for n_ctx=2048 = 5.1781 +/- 0.02890
+--- Mistral-7B-Instruct-v0.3-Q4_K_M.gguf TQ3/F16 ---
+llama_init_from_model: KV self size  =  156.00 MiB, K (tq3_0):   28.00 MiB, V (f16):  128.00 MiB
+Final estimate: PPL over 160 chunks for n_ctx=2048 = 5.2464 +/- 0.02916
+
+=== Analysis ===
+Every previously-measured config reproduces April CUDA EXACTLY (4 decimals):
+  Qwen F16 7.1404 / TQ4-K 7.1453 / TQ3-K 7.1663; Mistral 5.1638 / 5.1781 / 5.2464.
+New CUDA data points (K+V both quantized): Qwen TQ4/TQ4 7.1622 (+0.31% vs F16),
+  TQ3/TQ3 7.2026 (+0.87%) — same ballpark as CPU K+V deltas (+0.44% / +1.13%).
+
+PROVENANCE FINDING: the Qwen sha256 matches the Ryzen copy and the dataset is
+canonical, yet CUDA F16 (7.1404) still differs from CPU (7.2591) / Metal (7.2533)
+by ~0.12. The April "different model revision" hypothesis is now REFUTED — the
+CPU<->CUDA gap on the qwen35 hybrid arch is a real, deterministic backend
+numerics difference (each backend reproduces its own April value exactly).
+Likely the fused delta_net CUDA path vs iqk CPU path accumulation. Dense models
+show no such gap (Mistral cross-backend spread 0.005). Pre-existing, unchanged
+by the merge; tracked as a research question, not a regression.
+
+Env gotchas hit during this run (recorded for next time):
+  - CUDA 13 dropped sm_50/61/70: must pass -DCMAKE_CUDA_ARCHITECTURES=89.
+  - fattn-vec-common.cuh stray template clause broke all CUDA builds (fixed 41d225de).
+  - Vast template auto-started vLLM, preallocating 43/49 GB VRAM — Qwen OOMed at
+    load while Mistral squeaked by. kill the VLLM::EngineCore PID before running.

@@ -133,5 +133,30 @@ KV self size matched April exactly (18 MiB TQ4, 14 MiB TQ3, 64 MiB F16).
 Hadamard auto-enable and the calibration codebook engaged normally.
 Raw logs: `LeanKV/prototype/eval/results/logs/postmerge-2026-07/` (local).
 Metal TQ kernels re-validated post-merge on M2 (2026-07-15, canonical
-dataset — see the Metal rows and dagger note above). CUDA TQ kernels are
-carried in this tree but not yet re-validated post-merge (need a 4090 build).
+dataset — see the Metal rows and dagger note above).
+
+### CUDA — 2026-07-17 (RTX 4090, sha-matched model, canonical dataset)
+
+All previously-measured configs reproduce April CUDA exactly (4 decimals):
+
+| Model / KV config | Post-merge | April | Result |
+|---|---|---|---|
+| Qwen 3.5-9B F16/F16 | 7.1404 | 7.1404 | exact |
+| Qwen 3.5-9B TQ4/F16 | 7.1453 | 7.1453 | exact |
+| Qwen 3.5-9B TQ3/F16 | 7.1663 | 7.1663 | exact |
+| Qwen 3.5-9B TQ4/TQ4 | 7.1622 (+0.31%) | — | new data point |
+| Qwen 3.5-9B TQ3/TQ3 | 7.2026 (+0.87%) | — | new data point |
+| Mistral 7B F16 / TQ4-K / TQ3-K | 5.1638 / 5.1781 / 5.2464 | same | exact |
+
+With this, the 2026-07 merge is validated on **all three backends**
+(CPU AVX2, Metal M2, CUDA sm_89). Full log + environment gotchas:
+`docs/cuda-postmerge-2026-07-results.txt`.
+
+**Provenance finding:** the CUDA run used a Qwen GGUF sha-identical to the
+Ryzen copy on the canonical dataset, yet CUDA F16 (7.1404) still sits ~0.12
+below CPU (7.2591) / Metal (7.2533). The old "different model revision"
+explanation is refuted — on the qwen35 hybrid arch this is a real,
+deterministic backend numerics difference (likely fused delta_net CUDA vs
+iqk CPU accumulation). Dense models show no such gap (Mistral spread 0.005
+across all three backends). Pre-existing, unchanged by the merge; open
+research question, not a regression.
