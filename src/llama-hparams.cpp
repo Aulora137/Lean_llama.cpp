@@ -1744,6 +1744,49 @@ void llm_load_hparams(
                     ml.get_key(LLM_KV_ATTENTION_VALUE_LENGTH_MLA, hparams.n_embd_head_v_full);
                 }
             } break;
+        case LLM_ARCH_LFM2:
+        case LLM_ARCH_LFM2MOE:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+                ml.get_key(LLM_KV_SHORTCONV_L_CACHE,           hparams.n_shortconv_l_cache);
+                GGML_ASSERT(hparams.n_shortconv_l_cache > 1);
+
+                // Some LFM2 variants (e.g. LFM2-8B-A1B v1) carry a sliding window; this port
+                // implements full attention only, so refuse such models instead of silently
+                // producing wrong outputs. (LFM2.5-1.2B and LFM2.5-8B-A1B carry no such key.)
+                uint32_t swa = 0;
+                ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, swa, false);
+                if (swa > 0) {
+                    throw std::runtime_error("LFM2 models with sliding-window attention are not supported yet");
+                }
+
+                // conv layers are marked with head_count_kv == 0 in the per-layer array;
+                // they own the recurrent (short-conv) state instead of attention KV
+                for (uint32_t il = 0; il < hparams.n_layer; ++il) {
+                    hparams.recurrent_layer_arr[il] = hparams.n_head_kv(il) == 0;
+                }
+
+                if (model.arch == LLM_ARCH_LFM2MOE) {
+                    ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp);
+                    ml.get_key(LLM_KV_LEADING_DENSE_BLOCK_COUNT,  hparams.n_layer_dense_lead);
+                    ml.get_key(LLM_KV_EXPERT_GATING_FUNC,         hparams.expert_gating_func, false);
+                    if (hparams.expert_gating_func == LLM_EXPERT_GATING_FUNC_TYPE_NONE) {
+                        hparams.expert_gating_func = LLM_EXPERT_GATING_FUNC_SIGMOID;
+                    }
+                    hparams.expert_weights_norm = true; // norm_topk_prob
+                    switch (hparams.n_layer) {
+                        case 24: model.type = e_model::MODEL_8B_A1B;  break;
+                        case 40: model.type = e_model::MODEL_24B_A2B; break;
+                        default: model.type = e_model::MODEL_UNKNOWN;
+                    }
+                } else {
+                    hparams.n_layer_dense_lead = hparams.n_layer; // dense LFM2: no MoE layers
+                    switch (hparams.n_ff()) {
+                        case  8192: model.type = e_model::MODEL_1_2B; break;
+                        default:    model.type = e_model::MODEL_UNKNOWN;
+                    }
+                }
+            } break;
         default: (void)0;
     }
 

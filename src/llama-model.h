@@ -110,6 +110,7 @@ enum e_model {
     MODEL_12B_A2_5B,
     MODEL_16B_A1B,
     MODEL_21B_A3B, // Ernie MoE small
+    MODEL_24B_A2B, // LFM2.5 MoE large
     MODEL_30B_A3B,
     MODEL_33B_A3B,
     MODEL_35B_A3B,

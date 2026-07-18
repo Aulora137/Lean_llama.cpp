@@ -1319,14 +1319,17 @@ static bool llama_kv_cache_init(
             if (qnext_recurrent) {
                 // LeanInfer Phase 1c: store recurrent state as FP16 (50% memory reduction)
                 // Cast to FP32 before delta_net op, cast back after
-                s = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, hparams.n_embd_v_s(), qnext_state_slots);
+                // LFM2 short-conv state stays F32: ggml_ssm_conv reads it in place (tiny anyway)
+                const ggml_type s_type = (model.arch == LLM_ARCH_LFM2 || model.arch == LLM_ARCH_LFM2MOE)
+                                       ? GGML_TYPE_F32 : GGML_TYPE_F16;
+                s = ggml_new_tensor_2d(ctx, s_type, hparams.n_embd_v_s(), qnext_state_slots);
                 auto s_name = std::string{"cache_s_l"} + std::to_string(i);
                 ggml_set_name(s, s_name.c_str());
                 cache.s_l[i] = s;
                 cache.k_l.push_back(nullptr);
                 cache.v_l.push_back(nullptr);
                 LLAMA_LOG_DEBUG("=== Created recurrent cache %s as %ld x %ld x %ld x %ld\n", s->name, s->ne[0], s->ne[1], s->ne[2], s->ne[3]);
-                if (split_cache && model.layers[i].ssm_out->extra) {
+                if (split_cache && hparams.ssm_dt_rank > 0 && model.layers[i].ssm_out->extra) {
                     auto split_ssm_out = (const ggml_split_tensor_t *)model.layers[i].ssm_out->extra;
                     GGML_ASSERT(split_ssm_out);
                     int num_v_heads = hparams.ssm_dt_rank;
@@ -3708,6 +3711,10 @@ static std::pair<std::vector<double>, double> get_layer_sizes(const llama_model_
             continue;
         }
         if (name == "output_norm.weight") {
+            continue;
+        }
+        if (name == "token_embd_norm.weight") {
+            // LFM2's final norm ships under this name
             continue;
         }
         if (model.arch == LLM_ARCH_GEMMA4) {
@@ -8957,6 +8964,8 @@ enum llama_rope_type llama_rope_type(const struct llama_model * model) {
         case LLM_ARCH_GEMMA4_MTP:
         case LLM_ARCH_DFLASH_DRAFT:
         case LLM_ARCH_GEMMA4_ASSISTANT:
+        case LLM_ARCH_LFM2:
+        case LLM_ARCH_LFM2MOE:
             return LLAMA_ROPE_TYPE_NEOX;
 
         case LLM_ARCH_QWEN2VL:
