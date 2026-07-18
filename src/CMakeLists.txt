@@ -66,6 +66,8 @@ add_library(llama
             leankv-calib.cpp
             leankv-kvimp.h
             leankv-kvimp.cpp
+            leankv-lowrank.h
+            leankv-lowrank.cpp
             leankv-calib-corpus.h
             leankv-codebook.h
             leankv-codebook.cpp

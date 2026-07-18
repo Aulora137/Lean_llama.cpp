@@ -44,6 +44,7 @@ extern "C" {
 // LeanKV Phase 7: K-vector calibration dump (env-gated, zero-cost when off)
 #include "leankv-calib.h"
 #include "leankv-kvimp.h"
+#include "leankv-lowrank.h"
 
 // LeanInfer profiler (optional — only present when building alongside LeanInfer)
 #if __has_include("../../instrument/leaninfer_profiler.h")
@@ -7955,6 +7956,9 @@ struct llama_context * llama_init_from_model(
     if (cparams.k_cache_hadamard) {
         llm_apply_khad_pretransform(*model);
     }
+    // LeanKV Phase A: low-rank K projection constants (LEANKV_KV_LOWRANK).
+    // No-op when the env var is unset; loads + materializes once per process.
+    leankv_lowrank_init(*model);
     cparams.split_mode_graph_scheduling = params.split_mode_graph_scheduling;
     //cparams.split_mode_f16   = params.split_mode_f16;
     cparams.scheduler_async  = params.scheduler_async;

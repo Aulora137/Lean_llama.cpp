@@ -5,6 +5,7 @@
 #include "llama-context.h"
 #include "llama-delta-net.h"
 #include "leankv-calib.h"
+#include "leankv-lowrank.h"
 
 #include "ggml.h"
 #include "ggml-quants.h"
@@ -930,6 +931,22 @@ void llm_build_context::llm_build_kv_store(
     // Zero-cost on the hot path: both gates are env-var-cached booleans.
     if (leankv_calib_capture_required()) {
         ggml_format_name(k_cur, "leankv_k_calib-%d", (int) il);
+    }
+
+    // LeanKV Phase A: low-rank K projection (LEANKV_KV_LOWRANK=<path>).
+    // Replace the post-RoPE K with its reconstruction P (P^T k) on the fixed
+    // rank-r subspace fitted offline, BEFORE the cache write. K only; V is
+    // untouched, attention kernels are untouched. Mirrors the LoRA down/up
+    // mul_mat pair in llm_build_lora_mm: p_down=[head_dim,rank] contracts
+    // k_cur's ne[0]=head_dim into rank coefficients, p_up=[rank,head_dim]
+    // expands them back. Disabled -> one cached-bool branch, nothing else.
+    if (k_cur) {
+        if (const leankv_lowrank_entry * lr = leankv_lowrank_get((int) il)) {
+            GGML_ASSERT(k_cur->ne[0] == lr->head_dim);
+            ggml_tensor * lr_coef = ggml_mul_mat(ctx, lr->p_down, k_cur); // c = P^T k : [rank, ...]
+            k_cur = ggml_mul_mat(ctx, lr->p_up, lr_coef);                 // k~ = P c  : [head_dim, ...]
+            cb(k_cur, "k_lowrank", il);
+        }
     }
 
     //struct ggml_tensor * k_cache_view = ggml_view_1d(ctx, kv.k_l[il], n_tokens*n_embd_k_gqa,
