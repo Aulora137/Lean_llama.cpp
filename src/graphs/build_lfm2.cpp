@@ -19,6 +19,16 @@
 // The rolling conv state lives in the hybrid recurrent cache kv_self.s_l[il]
 // (F32, one row of n_embd*(L_cache-1) per sequence slot), the same machinery
 // qwen3next/qwen35 use for their delta-net state.
+//
+// lfm2moe (LFM2.5-8B-A1B / 24B-A2B) shares this graph: the first
+// leading_dense_block_count layers keep the dense SwiGLU FFN, the rest route
+// through 32 sigmoid-gated experts (top-4, exp_probs_b selection bias,
+// normalized top-k weights, no shared expert). Mixer choice (conv vs attn)
+// is independent of FFN choice (dense vs MoE) — e.g. 8B-A1B layer 2 is
+// attention+MoE while layer 3 is conv+MoE.
+//
+// Verified: LFM2.5-1.2B-Instruct-Q4_K_M (attn layers 2,5,8,10,12,14) and
+// LFM2.5-8B-A1B-Q4_K_M (attn layers 2,6,10,14,18,21).
 
 // one short-conv mixer block operating on a single state slot
 ggml_tensor * llm_build_context::build_lfm2_shortconv(ggml_cgraph * gf, ggml_tensor * input,

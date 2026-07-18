@@ -2149,6 +2149,7 @@ const char * llama_model_type_name(e_model type) {
         case MODEL_A13B:          return "A13B";
         case MODEL_7B_A1B:        return "7B.A1B";
         case MODEL_8B_A1B:        return "8B.A1B";
+        case MODEL_24B_A2B:       return "24B.A2B";
         case MODEL_12B_A2_5B:     return "12B.A2.5B";
         case MODEL_16B_A1B:       return "16B.A1B";
         case MODEL_21B_A3B:       return "21B.A3B";

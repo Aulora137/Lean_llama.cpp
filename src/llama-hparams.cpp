@@ -1775,7 +1775,8 @@ void llm_load_hparams(
                     }
                     hparams.expert_weights_norm = true; // norm_topk_prob
                     switch (hparams.n_layer) {
-                        case 24: model.type = e_model::MODEL_8B_A1B; break;
+                        case 24: model.type = e_model::MODEL_8B_A1B;  break;
+                        case 40: model.type = e_model::MODEL_24B_A2B; break;
                         default: model.type = e_model::MODEL_UNKNOWN;
                     }
                 } else {
