@@ -177,3 +177,17 @@ a.out.*
 /e2b_rank_report.txt
 /e2b_step1_*
 /run_e2b_*.sh
+/base_f16_lfm2.kld
+/base_f16_8b.kld
+/kv_entropy_*.json
+/lfm2_*.bin
+/lfm2_*.log
+/lfm2_rank_report.txt
+/run_entropy_lfm2_campaign.sh
+/run_budget_controls.sh
+/budget_controls_status.txt
+/gemma_ent_calib.log
+/run_8b_campaign.sh
+/8b_*.log
+/8b_rank_report.txt
+/8b_calib.bin

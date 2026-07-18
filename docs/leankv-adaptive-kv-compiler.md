@@ -19,6 +19,7 @@ Gemma 4 E2B campaign) so the design doesn't have to be re-derived.
 | Qwen 3.5 hybrid (8/36 layers have KV) | the *architecture* — Mamba layers bypass KV | plain TQ already near-optimal; even TQ2 only +2.6%. Nothing to adapt — avoidance is built in |
 | Gemma 3-4B (MQA, single-owner) | variance outliers + one sink layer | A1 uniform+outlier + robust norm (importance signal proved **redundant**, corr 0.82 with variance; A3 lost 18% at 30σ) |
 | Gemma 4 E2B (MQA, 15-own/20-share, rank-bounded) | **cross-layer reuse** (owner 13 feeds 17 layers) + **rank slack** (global r95 fill 38.3% of 512) | **A1R reuse-weighted allocation: −42% KLD vs A1 at 99σ**; low-rank ladder armed on globals |
+| LFM2.5 (conv hybrid, 6/16 attn, GQA 32/8) | the architecture — conv layers hold fixed 16 KB state, zero KV growth; no rank slack (r99 94%) | plain A1+robust on the 6 attn tensors; sink at LAST attn layer (14); entropy/importance add nothing (campaign 2) |
 
 Same 3.0 bpw budget, same quantizer family — and the *correct policy differs per
 architecture*. Importance helps nowhere tested; reuse is decisive exactly where the
@@ -66,8 +67,9 @@ that turns measurements into a *combined* manifest instead of a bits-only plan.
 | distinct layer types, few of each | empirical per-type codebooks (Qwen3-4B +1.75 dB) | in-tree, not wired to the plan |
 | sub-3-bit target on dense attn | vector quantization (escapes scalar Lloyd-Max wall) | research (TQ2 postmortem proves the scalar limit) |
 | window-capped local layers | deprioritize: memory bounded by window, not context | free insight — allocator should know it |
-| KV-bypassing layers (Mamba/SSM) | leave alone; spend budget on the few attn layers | implicit today |
-| high attention entropy | entropy-weighted bits (arms A2/A4) | **blocked: no entropy emitter in kvimp** |
+| KV-bypassing layers (Mamba/SSM/conv) | leave alone; spend budget on the few attn layers | validated (Qwen3.5, LFM2.5) |
+| high attention entropy | entropy-weighted bits (arms A2/A4) | **tested 2026-07-18: no gain over variance at matched budget** (converges on LFM2.5, trails on Gemma; see campaign 2 doc) — collector kept as diagnostic |
+| coarse ladder, few cells | **sweep nominal targets + audit emitted bit-sums** — budget granularity moves KLD more than signal choice | standing methodology rule (campaign 2 controls) |
 
 ## Non-goals
 
