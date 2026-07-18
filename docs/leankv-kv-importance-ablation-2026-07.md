@@ -90,6 +90,13 @@ should be the default whenever those arms are used.
   entropy file yet, so those arms currently collapse to A1/A3. Building that emitter
   is the next real experiment, not a re-run.
 
+**2026-07-17 addendum:** on Gemma 4 E2B (cross-layer KV sharing), the **reuse** arm
+A1R beat A1 by **42% Mean KLD at 99σ** — the first signal to beat the baseline in
+this program. The "ship A1" verdict above stands for single-owner architectures
+(Gemma 3, Qwen); on shared-KV architectures ship **A1R + robust norm**. See
+`docs/leankv-e2b-campaign-2026-07.md` (results) and
+`docs/leankv-adaptive-kv-compiler.md` (the per-arch policy consequence).
+
 ## Reproduce
 
 ```bash

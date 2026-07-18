@@ -172,3 +172,8 @@ a.out.*
 /calib*.txt
 /bit_plan.json
 /run_kld_*.sh
+/base_f16_e2b.kld
+/e2b_calib.bin
+/e2b_rank_report.txt
+/e2b_step1_*
+/run_e2b_*.sh

@@ -109,3 +109,96 @@ KV dominates memory at long context** — the regime the whole exercise is for.
 Append results to this doc (or a sibling results doc) with: model sha, tree commit,
 dataset md5, per-arm Mean KLD ± err and Same-top %, and the Step-0/1 hparam + rank
 tables. Update the ablation doc's conclusion if the reuse verdict lands.
+
+---
+
+# RESULTS — 2026-07-17 (Ryzen 7 7735U, CPU AVX2)
+
+| | |
+|---|---|
+| Model | `gemma-4-E2B-it-Q4_K_M.gguf` (unsloth/gemma-4-E2B-it-GGUF) |
+| Model sha256 | `740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8` |
+| Tree | `e2543108` + this doc |
+| Dataset | canonical `wiki.test.raw`, md5 `7c0137fc034ddbc56a296bce31b4f7fb` |
+| Calibration | kvimp on `wiki.valid.raw`, 7,608 tok (allocation); 732-tok `calib.txt` (rank dump) |
+
+## Step 0 — geometry (predictions graded)
+
+Loader + kvimp confirmed: arch `gemma4`, 35 layers, n_embd **1536**, n_head 8, MQA
+(n_head_kv 1), head_dim **256 local / 512 global**, sliding_window 512,
+**15 owned / 20 shared** KV layers, globals at il 4,9,14,19,24,29,34.
+
+- ✅ Predicted hidden 1536, 15/20 owned/shared split, 256/512 head dims — exact.
+- ❌ **rope_fraction = 1.0 on every layer** (rope dim = head_dim: 512/512, 256/256).
+  The "0.25 p-RoPE on globals" prediction is falsified → **Step-4 rung 3 (A5
+  p-RoPE partition) is retired on E2B** — there is nothing to partition.
+- **Reuse concentration** (the A1R signal): layer 13 owns KV for **17** downstream
+  layers, layer 14 for **5**; all other owners reuse=1. Robust-norm sink detection
+  flagged layers [0, 13] (k-importance) and [0] (variance).
+- Loader warning (relevant, correct): `13 layer(s) have q_dim < head_dim
+  (rank-bounded KV subspace)` — q_dim = 1536/8 = 192 < 256/512 everywhere.
+
+## Step 3 — reuse go/no-go: **GO** (decisive)
+
+Matched 3.0 bpw (`--bmax 4`, `--norm robust`), K+V per-layer plans, 144 chunks,
+KLD vs same-model F16 base. A1R = variance × reuse, importance OFF.
+
+| Arm | Mean KLD ↓ | Same-top ↑ | KV plan on owners 13/14 |
+|-----|-----------|-----------|------------------------|
+| A1 (uniform+outlier) | 1.7154 ± 0.0059 | 54.82% | 13: tq2/tq3 · 14: tq4/tq3 |
+| **A1R (reuse)** | **0.9934 ± 0.0042** | **65.07%** | 13: tq4/tq4 · 14: tq4/tq4 |
+
+**A1R cuts Mean KLD 42%** (Δ = 0.722 ≈ 99σ) and gains 10.2 points same-top by
+re-protecting exactly the two shared owners that variance-only allocation starves
+(layer 13 looks quiet locally but feeds 17 downstream layers). This is the first
+Gemma-4-native allocation result, and the first arm ever to beat the A1 baseline
+in this program (magnitude-importance lost on Gemma 3-4B; reuse wins on E2B).
+`--w-reuse` sweep skipped per the decision rule (not borderline).
+
+Caveats: absolute F16 PPL on raw WikiText is 153.36 (it-tuned, on-device
+multimodal model) — internal same-model KLD comparisons are unaffected. E2B at
+3.0 bpw is much more quantization-sensitive than Gemma 3-4B (A1 KLD 1.72 vs
+0.39): consistent with every layer being rank-bounded (TQ3/TQ2 unsafe territory
+per the Q-dim gate) — see Step 1.
+
+## Step 1 — empirical K-rank (r95/r99), local vs global
+
+732 K-vectors/layer, post-RoPE post-K-norm, f16 cache (clean probe), SVD per
+layer. Full table: `e2b_rank_report.txt` (local artifact).
+
+| Group | n | r95 min/med/max (fill) | r99 min/med/max (fill) |
+|-------|---|------------------------|------------------------|
+| local (256) | 12 | 116/**134**/147 (**52.1%**) | 192/206/213 (80.3%) |
+| global (512) | 3 | 167/**196**/223 (**38.3%**) | 289/334/347 (65.2%) |
+
+- **Prediction confirmed almost exactly at 95% energy:** predicted global fill
+  n_embd/(8·512) = 37.5%; measured **38.3%** (median r95 196 ≈ q_dim 192).
+- Notable: with MQA, the 8 query heads *could* jointly probe up to the full 512
+  dims — yet r95 says they use ~196. The heads' Q-subspaces overlap heavily.
+  The r99 tail (334) shows real energy beyond q_dim, so truncation should target
+  r95+margin, not r99.
+- **The most-reused owners are also the most compressible:** layer 14 (5×
+  global) has the lowest global rank (r95 167, steepest decay 3.3e-04); layer 13
+  (17× local) is near-lowest of the locals (r99 197, decay 7.3e-04).
+- Layer 0 shows **no rank anomaly** (r99 206, in family) — unlike Qwen3-4B
+  (r99 = 3). Its sink behavior on E2B is variance/importance-only.
+
+**The low-rank ladder (Step 4) is armed for the global layers:** a rank-224
+projection (r95 max + margin) on the 3 global owners retains ≥95% energy while
+cutting global K storage 56% *before* quantization — and globals dominate KV
+memory at long context (locals are ring-capped at the 512 window). Combined
+strategy suggested by Steps 1+3 jointly: low-rank the globals, spend the saved
+bits protecting the shared owners (A1R already does the latter).
+
+## Verdict / next
+
+1. **Ship-on-E2B allocation: A1R + `--norm robust`** (42% better than A1).
+2. Step 4 next rungs (in order of cheapness): layer-type policy plan is subsumed
+   by A1R; **empirical per-layer-type codebooks** (rung 2) and **rank-224
+   low-rank projection on globals** (rung 4, now justified by measured r95) are
+   the live follow-ups. Rung 3 (p-RoPE) retired — no partition exists.
+3. Step 5 (long-context validation) still pending — it is where the global-layer
+   levers pay off.
+4. Cross-arch verdict update for the ablation doc: reuse is the first signal to
+   beat A1, but it only exists on shared-KV architectures. On single-owner
+   models (Gemma 3, Qwen) A1 remains the shipping config.
