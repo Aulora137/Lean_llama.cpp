@@ -93,6 +93,9 @@ struct llama_hparams {
     uint32_t ssm_dt_rank = 0;
     uint32_t ssm_n_group = 0;
 
+    // for LFM2/LFM2.5 short-convolution mixer layers
+    uint32_t n_shortconv_l_cache = 0;
+
     // for hybrid state-space models (e.g. qwen3next)
     std::array<bool, LLAMA_MAX_LAYERS> recurrent_layer_arr;
 
@@ -213,6 +216,7 @@ struct llama_hparams {
         if (this->ssm_d_state != other.ssm_d_state) return true;
         if (this->ssm_dt_rank != other.ssm_dt_rank) return true;
         if (this->ssm_n_group != other.ssm_n_group) return true;
+        if (this->n_shortconv_l_cache != other.n_shortconv_l_cache) return true;
         if (this->recurrent_layer_arr != other.recurrent_layer_arr) return true;
         for (int i = 0; i < 8; ++i) {
             if (this->dflash_target_layer_ids[i] != other.dflash_target_layer_ids[i]) return true;
@@ -299,6 +303,10 @@ struct llama_hparams {
     }
 
     uint32_t n_embd_k_s() const { // dimension of the rolling state embeddings
+        if (n_shortconv_l_cache > 0) {
+            // LFM2 keeps its conv state in the hybrid s-cache (n_embd_v_s), not in K rows
+            return 0;
+        }
         if (ssm_n_group > 0) {
             // qwen3next keeps all recurrent state in the V-cache tail
             return 0;
@@ -310,6 +318,10 @@ struct llama_hparams {
     }
 
     uint32_t n_embd_v_s() const { // dimension of the recurrent state embeddings
+        if (n_shortconv_l_cache > 0) {
+            // LFM2 short-conv rolling state: n_embd channels x (L_cache - 1) past columns
+            return n_embd * (n_shortconv_l_cache - 1);
+        }
         if (ssm_n_group > 0) {
             // qwen3next recurrent state packs:
             // 1) conv state: (d_conv - 1) * (2 * key_dim + value_dim)

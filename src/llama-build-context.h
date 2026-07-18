@@ -230,6 +230,12 @@ struct llm_build_context {
 
     ggml_cgraph * build_qwen35();
 
+    ggml_cgraph * build_lfm2();
+
+    ggml_tensor * build_lfm2_shortconv(ggml_cgraph * gf, ggml_tensor * input,
+            ggml_tensor * inp_s_seq, ggml_tensor * inp_out_ids,
+            int64_t state_seq_id, bool reset_state, int il);
+
     ggml_cgraph * build_phi2();
 
     ggml_cgraph * build_phi3();
