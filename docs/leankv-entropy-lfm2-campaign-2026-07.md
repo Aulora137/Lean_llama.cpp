@@ -90,4 +90,56 @@ From the Step-0 probe + rank dump (732 vecs/layer, post-RoPE K, SVD):
 
 Raw logs: `kld_{A1,A2,A3,A4}_{gemma,lfm2}.log`, `kld_A1ctl_*.log`,
 `lfm2_rank_report.txt`, status `kld_campaign2_status.txt`, `budget_controls_status.txt`
-(local, gitignored). Next: same matrix on LFM2.5-8B-A1B (the 8 GB-RAM SLM thesis model).
+(local, gitignored).
+
+---
+
+# Campaign 3 — LFM2.5-8B-A1B full matrix (overnight 2026-07-18, 01:04–03:22)
+
+The 8 GB-RAM SLM thesis model: `lfm2moe`, 24 layers, **6 attention @ {2,6,10,14,18,21}**,
+18 conv (fixed state), 32 experts / 4 active (~1.5B active of 8.3B), GQA 32/8,
+head_dim 64, vocab 128 000. Same KV geometry as the 1.2B — six growing tensors,
+24 MiB @ F16 c=2048. F16 base PPL 30.58 ± 0.30 (143 chunks; it-tuned MoE on raw
+WikiText — internal comparisons only).
+
+**All four arms natively emitted 38-bit plans — identical budgets, zero confound**
+(the 12-cell space + robust norm made the control redundant: A1ctl@3.02 reproduced
+A1 exactly).
+
+| Arm | Emitted bits | Mean KLD ↓ | Same-top | KV (c=2048) |
+|---|---|---|---|---|
+| A1 ≡ A2 ≡ A1ctl (identical plans) | 38 | **0.6109 ± 0.0023** | 64.99% | 5.50 MiB |
+| A3 ≡ A4 (identical plans) | 38 | 0.6260 ± 0.0023 | 64.60% | 5.50 MiB |
+
+- **Entropy converged to variance's exact plan a third time** (A2 ≡ A1, bit-identical
+  results). The convergence is now the norm, not the exception.
+- **Importance lost on a fourth architecture** at perfectly matched budget (+2.5%,
+  ~4.7σ): its plan dropped layer-6 V to tq2 to over-protect layer-14 V — the same
+  quiet-but-wrong reallocation pattern as everywhere else.
+- **Sink pattern replicates:** variance sink = layer 21, the LAST attention layer —
+  matching the 1.2B (layer 14, also last-attn). *LFM2-family models sink at the final
+  attention layer*, not layer 0; robust norm caught it automatically.
+- Rank: median r99 57/64 (89% fill), r95 38–50/64; only the sink layer (21) mildly
+  rank-deficient. No usable low-rank slack — same verdict as the 1.2B.
+- Sensitivity scales up: at the same 3 bpw the 8B carries KLD 0.61 vs the 1.2B's 0.12.
+  The MoE's per-token expert routing appears to amplify KV perturbation — worth a
+  budget-ladder sweep (3.5/4.0 bpw) before production use.
+
+## The 8 GB thesis, quantified
+
+Weights Q4_K_M 5.2 GB + KV 5.5 MiB @ 2k ctx (TQ, vs 24 MiB F16) + fixed 18×16 KB conv
+state. **Total inference footprint ≈ 5.5 GB — an 8.3B-knowledge model with 1.5B-active
+compute fits an 8 GB machine with ~2.5 GB to spare**, and KV stays negligible at any
+context length (only 6 tensors grow; TQ4 keeps them ~4× smaller). KV quantization is
+NOT the binding constraint on this family — weights are. The adaptive-compiler verdict
+for LFM2.5: plain A1+robust on the 6 attention tensors, done; spend engineering
+elsewhere (weight quant, expert offload policy).
+
+## Final signal scoreboard (five architectures, all matched-budget)
+
+| Signal | Verdict |
+|---|---|
+| variance + outlier + robust norm (A1) | **the allocation baseline — never beaten at matched budget on single-owner arches** |
+| reuse (A1R) | **only signal to beat A1** — −42% KLD on E2B; requires shared-KV arch |
+| entropy (A2) | converges to A1's plan (LFM2.5 ×2) or trails it (Gemma, −3.9% at matched bits); diagnostic-only |
+| importance (A3/A4) | harmful on all four arches tested (Gemma-3, E2B-by-analysis, LFM2.5-1.2B, 8B-A1B) |
