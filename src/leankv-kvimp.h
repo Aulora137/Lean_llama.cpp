@@ -38,8 +38,19 @@
 // its own mini-ablation.
 //
 // Env vars:
-//   LEANKV_KVIMP        "1" to enable (any non-"0" value)
-//   LEANKV_KVIMP_PATH   output JSON path (default: kv_stats.json)
+//   LEANKV_KVIMP              "1" to enable (any non-"0" value)
+//   LEANKV_KVIMP_PATH         output JSON path (default: kv_stats.json)
+//   LEANKV_KVIMP_ENTROPY_PATH attention-entropy JSON path (default: derived
+//                             from LEANKV_KVIMP_PATH, .json -> _entropy.json,
+//                             else kv_entropy.json)
+//
+// Attention entropy (allocator arms A2/A4): in the same run the collector also
+// captures the materialized softmax tensors "kq_soft_max_ext-<il>" (or
+// "kq_soft_max-<il>") and accumulates, per (layer, kv-head), the mean Shannon
+// entropy H = -sum_j p_j ln p_j over kv positions, averaged over query tokens
+// and the q heads of each GQA group. Emitted in the kv_bit_allocator.py
+// --entropy schema { "<layer>": { "k": [...], "v": [...] } } with k == v (one
+// signal). REQUIRES -fa off: flash attention never materializes the softmax.
 //
 // Usage: any binary works as the driver. Calibrate on CPU so activations are
 // captured in native f32 (same protocol as Phase 7):
