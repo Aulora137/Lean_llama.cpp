@@ -191,3 +191,15 @@ a.out.*
 /8b_*.log
 /8b_rank_report.txt
 /8b_calib.bin
+/e4b_*.log
+/e4b_*.bin
+/e4b_rank_report.txt
+/kv_lowrank_*.bin
+/run_ladder_campaign.sh
+/run_e4b_campaign.sh
+/run_lowrank_measure.sh
+/kld_ladder_status.txt
+/kld_e4b_status.txt
+/kld_lowrank_status.txt
+/kld_8b_status.txt
+/kv_stats_e4b*.json

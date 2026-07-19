@@ -60,8 +60,9 @@ that turns measurements into a *combined* manifest instead of a bits-only plan.
 | Measured condition | Method | Status |
 |---|---|---|
 | channel outliers, rank_fill high | Hadamard + scalar TQ ladder | shipped (TQ4/TQ3) |
-| reuse_count > 1 on owners | reuse-weighted bits (A1R) | **validated on E2B, −42% KLD** |
-| rank_fill_95 ≪ 1 (e.g. globals 38%) | low-rank projection (Palu/ASVD-style) then TQ the residual | armed by E2B Step 1; not yet implemented |
+| reuse_count > 1 on owners | reuse-weighted bits (A1R) | **validated 2/2: E2B −42%, E4B −84% KLD** |
+| rank_fill_95 ≪ 1 (e.g. globals 38%) | low-rank projection then TQ the residual | **tested 2026-07-19: NO-GO** — rank-224 recon alone costs 5.5× TQ4's entire KLD; energy retention ≠ task information (production ladder doc). Spectra remain diagnostic |
+| rank-bounded (q_dim < head_dim) + sub-3.5-bpw budget | **use uniform TQ4 (or raw TQ3), NOT mixed plans** — allocator tq2 floors self-sabotage; Q-dim gate auto-promotion measured correct 3× | production ladder doc |
 | sink layer (≥20× median var/imp) | pin to top bits, exclude from norm scale | shipped (`--norm robust`) |
 | q_dim < head_dim (rank-bounded) | Q-dim gate: TQ3/TQ2 unsafe → warn/promote | shipped (per-layer-type gate) |
 | distinct layer types, few of each | empirical per-type codebooks (Qwen3-4B +1.75 dB) | in-tree, not wired to the plan |
