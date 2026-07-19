@@ -203,3 +203,8 @@ a.out.*
 /kld_lowrank_status.txt
 /kld_8b_status.txt
 /kv_stats_e4b*.json
+/*_kq_k.bin
+/*_kq_q.bin
+/contour_study_stdout.log
+/kld_tq3fill_status.txt
+/run_tq3_fill.sh

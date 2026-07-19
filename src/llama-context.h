@@ -338,6 +338,11 @@ struct llama_context {
     // offline SVD analysis. See src/leankv-calib.h for format.
     struct leankv_calib_state * leankv_calib = nullptr;
 
+    // LeanKV attention-fidelity study: optional second dump state for the
+    // post-RoPE Q tensors (LEANKV_CALIBRATION_DUMP_Q_PATH). Same KCAL format,
+    // separate file. Only active alongside leankv_calib.
+    struct leankv_calib_state * leankv_calib_q = nullptr;
+
     // LeanKV: KV-importance calibration collector (kv_stats.json for the
     // offline per-head bit allocator). Enabled via LEANKV_KVIMP=1.
     // See src/leankv-kvimp.h.

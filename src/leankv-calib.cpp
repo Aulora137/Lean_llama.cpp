@@ -51,6 +51,22 @@ void leankv_calib_set_runtime_capture(bool on) {
     g_leankv_runtime_capture.store(on, std::memory_order_relaxed);
 }
 
+// Cached LEANKV_CALIBRATION_DUMP_Q_PATH lookup (nullptr if unset/empty).
+static const char * leankv_calib_q_env_path() {
+    static bool         init = false;
+    static const char * path = nullptr;
+    if (!init) {
+        path = std::getenv("LEANKV_CALIBRATION_DUMP_Q_PATH");
+        if (path && !path[0]) path = nullptr;
+        init = true;
+    }
+    return path;
+}
+
+bool leankv_calib_q_capture_required() {
+    return leankv_calib_enabled() && leankv_calib_q_env_path() != nullptr;
+}
+
 leankv_calib_state * leankv_calib_init_in_memory() {
     auto * s = new leankv_calib_state();
     s->accumulate_in_memory = true;
@@ -92,6 +108,40 @@ leankv_calib_state * leankv_calib_init() {
 
     std::fprintf(stderr,
         "leankv-calib: dumping K-vectors to '%s' (max_records=%d)\n",
+        s->path, s->max_records);
+
+    return s;
+}
+
+leankv_calib_state * leankv_calib_init_q() {
+    if (!leankv_calib_q_capture_required()) {
+        return nullptr;
+    }
+
+    auto * s = new leankv_calib_state();
+    std::snprintf(s->path, sizeof(s->path), "%s", leankv_calib_q_env_path());
+
+    s->file = std::fopen(s->path, "wb");
+    if (!s->file) {
+        std::fprintf(stderr, "leankv-calib: ERROR: failed to open Q dump '%s' for write\n", s->path);
+        delete s;
+        return nullptr;
+    }
+
+    const char * env_max = std::getenv("LEANKV_CALIBRATION_DUMP_MAX");
+    if (env_max && env_max[0]) {
+        s->max_records = std::atoi(env_max);
+    }
+
+    // Same KCAL header as the K dump.
+    const uint32_t magic   = 0x4C41434Bu; // 'KCAL'
+    const uint32_t version = 1u;
+    std::fwrite(&magic,   sizeof(uint32_t), 1, s->file);
+    std::fwrite(&version, sizeof(uint32_t), 1, s->file);
+    std::fflush(s->file);
+
+    std::fprintf(stderr,
+        "leankv-calib: dumping post-RoPE Q-vectors to '%s' (max_records=%d)\n",
         s->path, s->max_records);
 
     return s;

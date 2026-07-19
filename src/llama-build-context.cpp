@@ -2260,6 +2260,15 @@ ggml_tensor * llm_build_context::llm_build_kv(
         cb(k_cur, "Kcur_mixed_noise", il);
     }
 
+    // LeanKV attention-fidelity study: when Q capture is requested
+    // (LEANKV_CALIBRATION_DUMP=1 + LEANKV_CALIBRATION_DUMP_Q_PATH), rename the
+    // post-RoPE q_cur of KV-owning layers (k_cur/v_cur present — mirrors the
+    // k_cur rename in llm_build_kv_store) so the scheduler eval callback can
+    // dump it. Q shape is [head_dim, n_head, n_tokens] (n_head, not n_head_kv).
+    if ((k_cur || v_cur) && leankv_calib_q_capture_required()) {
+        ggml_format_name(q_cur, "leankv_q_calib-%d", (int) il);
+    }
+
     // these nodes are added to the graph together so that they are not reordered
     // by doing so, the number of splits in the graph is reduced
     ggml_build_forward_expand(graph, q_cur);

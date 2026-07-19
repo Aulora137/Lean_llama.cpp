@@ -13,6 +13,12 @@
 //   LEANKV_CALIBRATION_DUMP        "1" to enable (any non-"0" value)
 //   LEANKV_CALIBRATION_DUMP_PATH   output file (default: leankv_k_calib.bin)
 //   LEANKV_CALIBRATION_DUMP_MAX    max records to write (default: 0 = unlimited)
+//   LEANKV_CALIBRATION_DUMP_Q_PATH when set (alongside LEANKV_CALIBRATION_DUMP=1),
+//                                  ALSO capture the post-RoPE Q tensor of every
+//                                  KV-owning layer into this separate file, same
+//                                  KCAL record format. Q records have
+//                                  ne = [head_dim, n_head, n_tokens] (n_head,
+//                                  not n_head_kv).
 //
 // File format (little-endian):
 //   u32 magic = 'KCAL' (0x4C41434B)
@@ -77,6 +83,11 @@ bool leankv_calib_capture_required();
 // Runtime toggle used by auto-calibration. Safe to call from any thread.
 void leankv_calib_set_runtime_capture(bool on);
 
+// Returns true if post-RoPE Q capture should be active in the current graph:
+// LEANKV_CALIBRATION_DUMP is enabled AND LEANKV_CALIBRATION_DUMP_Q_PATH is a
+// non-empty path. Graph builders use this to rename q_cur on KV-owning layers.
+bool leankv_calib_q_capture_required();
+
 // Allocates a new calibration state, opens the output file, and writes the
 // file header. Returns nullptr if calibration is disabled or fopen fails.
 leankv_calib_state * leankv_calib_init();
@@ -84,6 +95,11 @@ leankv_calib_state * leankv_calib_init();
 // Allocates a calibration state configured for in-memory accumulation only
 // (no file output). Used for first-load auto-calibration.
 leankv_calib_state * leankv_calib_init_in_memory();
+
+// Allocates a second calibration state that dumps post-RoPE Q tensors to
+// LEANKV_CALIBRATION_DUMP_Q_PATH (same KCAL file format as the K dump).
+// Returns nullptr if Q capture is not requested or fopen fails.
+leankv_calib_state * leankv_calib_init_q();
 
 // Closes the file and frees the state. Safe to call with nullptr.
 void leankv_calib_free(leankv_calib_state * s);
