@@ -208,3 +208,5 @@ a.out.*
 /contour_study_stdout.log
 /kld_tq3fill_status.txt
 /run_tq3_fill.sh
+/xval_*.bin
+/vq_study_stdout.log

@@ -24,6 +24,22 @@ same-model F16 base, canonical WikiText-2 (`7c0137fc…`), c=2048, K+V as stated
 | — aggressive option (E2B only) | raw TQ3/TQ3 (`LEANKV_NO_QDIM_GATE=1`) | 0.2722 | 81.31% | 7.9 MiB | 4.6× |
 | — mid rung (E4B) | A1R@3.5 (robust, reuse) | 0.1293 | 85.85% | 28.25 MiB | — |
 
+### Complete TQ4 vs TQ3 matrix (2026-07-19, all cells measured)
+
+| Model | TQ4/TQ4 pure | TQ3/TQ3 pure |
+|---|---|---|
+| Gemma-4 E2B | 0.0965 · 88.98% · 10.12 MiB | gated ≡ TQ4 · **raw 0.2722** · 81.31% · 7.88 MiB |
+| Gemma-4 E4B | **0.0477** · 91.35% · 31.50 MiB | **gated 0.1180** · 86.35% · 26.50 MiB · raw 0.1359 · 85.31% · 24.50 MiB |
+| LFM2.5-1.2B | **0.0258** · 91.68% · 6.75 MiB | **0.0604** · 87.36% · 5.25 MiB |
+| LFM2.5-8B-A1B | 0.0911 · 85.85% · 6.75 MiB | 0.1554 · 81.55% · 5.25 MiB |
+
+**TQ3 is viable everywhere except E2B.** LFM2.5 at TQ3 (0.060 / 0.155) beats most
+models' TQ4. New behavior observed on E4B: the Q-dim gate performed a **partial**
+promotion — `K (adaptive) / V (tq3_0)`, lifting only the 4 rank-bounded 512-dim
+globals while the 20 locals genuinely ran TQ3. That free hybrid tier (0.118 @ 26.5
+MiB) beats raw TQ3 (0.136 @ 24.5 MiB) for 2 MiB. First non-all-or-nothing gate
+result; E2B (fully rank-bounded) still promotes everything.
+
 Reference: Gemma-3-4B A1@3.0 (production today) = 0.3922 / 77.17%. Every ship pick
 above clears it by a wide margin.
 
