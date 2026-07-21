@@ -70,8 +70,10 @@ worse quality — no reason to prefer it on E2B).
 ## E4B (first measurement of this model)
 
 Geometry: 42 layers, **24 own / 18 shared**, n_embd 2560, head_dim 256 local / 512
-global (globals at il 5,11,17,23) → **q_dim 320 > 256: locals NOT rank-bounded**
-(the wider model escapes E2B's trap; only the 4 globals remain bounded).
+global (globals at il 5,11,17,23,29,35,41) → **q_dim 320 > 256: locals NOT rank-bounded**
+(the wider model escapes E2B's trap; only the 7 globals remain bounded). [Corrected
+2026-07-21: the GGUF sliding_window_pattern has 7 globals, not 4 — the kv_policy prober
+reads this directly.]
 Sinks: variance [0, 1], k-importance [0, 22] — third distinct sink layout, all
 auto-detected. Rank fill: locals r95 60.2%, globals 52.1%.
 
