@@ -231,3 +231,4 @@ a.out.*
 /run_scale_closedloop.sh
 /run_mse_decisive.sh
 /run_asym_e2b.sh
+/eoptshrink_*.log

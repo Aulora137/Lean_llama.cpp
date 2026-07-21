@@ -22,7 +22,14 @@ lossless" at **3.25–3.9 bit, not 2**.
   so error can't accumulate — TQ2 +2.6%).
 - On the **hard case (rank-bounded MQA, e.g. Gemma-4 E2B), 2-bit genuinely fails**, and
   we exhaustively confirmed nobody's toolkit rescues it.
-- **The universal near-lossless floor is ~3 bit** — exactly where our numbers land.
+- **The near-lossless floor is ~3 bit — but it is architecture-dependent.** It holds
+  firmly for our edge targets (rank-bounded MQA like E2B, small-head-dim hybrids like
+  LFM2). **Dense models admit a small sub-3-bit win** (~0.2 bpe) via low-rank-truncation +
+  TQ-residual — the direction of eOptShrinkQ (arXiv 2605.02905), measured on our harness
+  at ~0.96× TQ3 @ 2.88 bpe on Gemma-3. That is ~4× smaller than the paper's ~0.8-bpe
+  headline (its low-rank coefficient storage doesn't amortize once honestly counted), and
+  it does **not** transfer to the rank-bounded/hybrid architectures the paper never tested
+  (E2B 2× worse; LFM2 ruinous at hd=64). See `leankv-eoptshrink-lattice-study-2026-07.md`.
 
 The only structurally-open door to sub-3-bit is **vector quantization** (beats the scalar
 ceiling by ≤1.5 dB) or **trained quantization** (BitNet-style QAT — but that trains the
