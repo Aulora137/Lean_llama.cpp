@@ -15,6 +15,11 @@
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+#include <cstdint>
+#include <fstream>
+#include <map>
+#include <mutex>
+#include <vector>
 
 extern "C" {
 #include "ggml-tq-runtime.h"
@@ -220,6 +225,85 @@ static bool leankv_mixed_sim_enabled(int head_dim) {
         g_mixed_noise_checked = true;
     }
     return g_mixed_noise_enabled;
+}
+
+// Correctness-first runtime PQ bridge.  LEANKV_PQ_REFERENCE points to an LPQ1
+// file exported by kit-v2/vq_study.py.  This encodes and immediately decodes
+// K before it is copied into an F16 cache: it measures the actual closed-loop
+// model effect, but intentionally makes no packed-cache or bandwidth claim.
+struct leankv_pq_entry {
+    int head_dim = 0;
+    int n_parts = 0;
+    std::vector<float> centroids; // [part][256][4], normalized by 32-value amax
+};
+static std::once_flag g_pq_once;
+static bool g_pq_enabled = false;
+static std::map<int, leankv_pq_entry> g_pq_entries;
+
+static uint32_t leankv_pq_read_u32(std::ifstream & in) {
+    uint32_t v = 0;
+    in.read(reinterpret_cast<char *>(&v), sizeof(v));
+    return v;
+}
+
+static void leankv_pq_load_once() {
+    const char * path = std::getenv("LEANKV_PQ_REFERENCE");
+    if (!path || !*path) return;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) { fprintf(stderr, "leankv-pq: cannot open '%s'\n", path); return; }
+    const uint32_t magic = leankv_pq_read_u32(in), version = leankv_pq_read_u32(in);
+    const uint32_t m = leankv_pq_read_u32(in), ncw = leankv_pq_read_u32(in);
+    const uint32_t nl = leankv_pq_read_u32(in);
+    if (!in || magic != 0x3151504Cu || version != 1 || m != 4 || ncw != 256 || nl == 0 || nl > 256) {
+        fprintf(stderr, "leankv-pq: invalid LPQ1 file '%s'\n", path); return;
+    }
+    for (uint32_t n = 0; n < nl; ++n) {
+        const uint32_t il = leankv_pq_read_u32(in), hd = leankv_pq_read_u32(in), np = leankv_pq_read_u32(in);
+        if (!in || hd == 0 || hd != np*4 || hd % 32) { fprintf(stderr, "leankv-pq: invalid layer entry\n"); g_pq_entries.clear(); return; }
+        leankv_pq_entry e; e.head_dim = int(hd); e.n_parts = int(np);
+        e.centroids.resize(size_t(np)*256*4);
+        in.read(reinterpret_cast<char *>(e.centroids.data()), e.centroids.size()*sizeof(float));
+        if (!in) { fprintf(stderr, "leankv-pq: truncated LPQ1 file\n"); g_pq_entries.clear(); return; }
+        g_pq_entries[int(il)] = std::move(e);
+    }
+    g_pq_enabled = !g_pq_entries.empty();
+    if (g_pq_enabled) fprintf(stderr, "leankv-pq: enabled reference PQ (raw m=4, 256 codewords, %zu layers; F16 cache reconstruction)\n", g_pq_entries.size());
+}
+
+static const leankv_pq_entry * leankv_pq_for_layer(int il, int head_dim) {
+    std::call_once(g_pq_once, leankv_pq_load_once);
+    auto it = g_pq_entries.find(il);
+    return g_pq_enabled && it != g_pq_entries.end() && it->second.head_dim == head_dim ? &it->second : nullptr;
+}
+
+static void leankv_pq_reference_op(struct ggml_tensor * dst, const struct ggml_tensor * src,
+                                   int ith, int nth, void * userdata) {
+    const auto * e = static_cast<const leankv_pq_entry *>(userdata);
+    GGML_ASSERT(src->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
+    const int64_t rows = ggml_nelements(src) / e->head_dim;
+    const int64_t r0 = rows*ith/nth, r1 = rows*(ith + 1)/nth;
+    const float * x = static_cast<const float *>(src->data);
+    float * y = static_cast<float *>(dst->data);
+    for (int64_t r = r0; r < r1; ++r) {
+        const float * xr = x + r*e->head_dim;
+        float * yr = y + r*e->head_dim;
+        for (int p = 0; p < e->n_parts; ++p) {
+            const int off = p*4, block = off/32;
+            float amax = 0.0f;
+            for (int j = block*32; j < block*32 + 32; ++j) amax = std::max(amax, std::fabs(xr[j]));
+            const float inv = amax > 0.0f ? 1.0f/amax : 0.0f;
+            const float * cbase = e->centroids.data() + size_t(p)*256*4;
+            int best = 0; float best_d = INFINITY;
+            for (int k = 0; k < 256; ++k) {
+                const float * c = cbase + k*4;
+                float d = 0.0f;
+                for (int j = 0; j < 4; ++j) { const float z = xr[off+j]*inv - c[j]; d += z*z; }
+                if (d < best_d) { best_d = d; best = k; }
+            }
+            const float * c = cbase + best*4;
+            for (int j = 0; j < 4; ++j) yr[off+j] = c[j]*amax;
+        }
+    }
 }
 
 uint32_t llm_build_context::llama_kv_qnext_state_slots(const llama_kv_cache & kv_self) {
@@ -2260,6 +2344,15 @@ ggml_tensor * llm_build_context::llm_build_kv(
         cb(k_cur, "Kcur_mixed_noise", il);
     }
 
+    // Runtime PQ reference experiment.  Keep storage F16: this is only the
+    // encode/decode fidelity test before introducing a packed PQ cache type.
+    if (k_cur && kv.k_l[il]->type == GGML_TYPE_F16) {
+        if (const auto * pq = leankv_pq_for_layer(il, hparams.n_embd_head_k(il))) {
+            k_cur = ggml_map_custom1(ctx, k_cur, leankv_pq_reference_op, 6, (void *) pq);
+            cb(k_cur, "Kcur_pq_reference", il);
+        }
+    }
+
     // LeanKV attention-fidelity study: when Q capture is requested
     // (LEANKV_CALIBRATION_DUMP=1 + LEANKV_CALIBRATION_DUMP_Q_PATH), rename the
     // post-RoPE q_cur of KV-owning layers (k_cur/v_cur present — mirrors the
@@ -3398,6 +3491,13 @@ ggml_tensor * llm_build_context::build_std_attention(ggml_cgraph * gf, ggml_tens
                     n_rot_l, sections, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
                     ext_factor_l, attn_factor_l, beta_fast_l, beta_slow_l);
         } else {
+            // LeanKV pre-RoPE study: name the K tensor immediately before its
+            // rope_ext so the scheduler eval callback can dump it (prefix
+            // leankv_kpre_calib-). Zero-cost when the env is unset. This is the
+            // path Gemma-4 E2B/E4B single-device (CPU) inference takes.
+            if (leankv_calib_kpre_capture_required()) {
+                ggml_format_name(Kcur, "leankv_kpre_calib-%d", il);
+            }
             Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, rope_factors_in, n_rot_l, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
                     ext_factor_l, attn_factor_l, beta_fast_l, beta_slow_l);
             Kcur = ggml_rope_ext( ctx0, Kcur, inp_pos, rope_factors_in, n_rot_l, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,

@@ -19,6 +19,16 @@
 //                                  KCAL record format. Q records have
 //                                  ne = [head_dim, n_head, n_tokens] (n_head,
 //                                  not n_head_kv).
+//   LEANKV_CALIBRATION_DUMP_KPRE_PATH when set (alongside LEANKV_CALIBRATION_DUMP=1),
+//                                  ALSO capture the PRE-RoPE K tensor of every
+//                                  KV-owning layer (named leankv_kpre_calib-<il>
+//                                  immediately before ggml_rope_ext) into this
+//                                  separate file, same KCAL record format. K
+//                                  records have ne = [head_dim, n_head_kv,
+//                                  n_tokens]. Used to test the KVQuant/KIVI
+//                                  pre-RoPE per-channel hypothesis: quantize in
+//                                  pre-RoPE space (outlier channels intact),
+//                                  then apply RoPE, then attend.
 //
 // File format (little-endian):
 //   u32 magic = 'KCAL' (0x4C41434B)
@@ -88,6 +98,12 @@ void leankv_calib_set_runtime_capture(bool on);
 // non-empty path. Graph builders use this to rename q_cur on KV-owning layers.
 bool leankv_calib_q_capture_required();
 
+// Returns true if PRE-RoPE K capture should be active in the current graph:
+// LEANKV_CALIBRATION_DUMP is enabled AND LEANKV_CALIBRATION_DUMP_KPRE_PATH is a
+// non-empty path. Graph builders use this to rename the K tensor immediately
+// before its ggml_rope_ext (prefix leankv_kpre_calib-).
+bool leankv_calib_kpre_capture_required();
+
 // Allocates a new calibration state, opens the output file, and writes the
 // file header. Returns nullptr if calibration is disabled or fopen fails.
 leankv_calib_state * leankv_calib_init();
@@ -100,6 +116,11 @@ leankv_calib_state * leankv_calib_init_in_memory();
 // LEANKV_CALIBRATION_DUMP_Q_PATH (same KCAL file format as the K dump).
 // Returns nullptr if Q capture is not requested or fopen fails.
 leankv_calib_state * leankv_calib_init_q();
+
+// Allocates a third calibration state that dumps PRE-RoPE K tensors to
+// LEANKV_CALIBRATION_DUMP_KPRE_PATH (same KCAL file format as the K dump).
+// Returns nullptr if pre-RoPE K capture is not requested or fopen fails.
+leankv_calib_state * leankv_calib_init_kpre();
 
 // Closes the file and frees the state. Safe to call with nullptr.
 void leankv_calib_free(leankv_calib_state * s);

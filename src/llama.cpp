@@ -807,6 +807,8 @@ llama_context::~llama_context() {
     leankv_calib = nullptr;
     leankv_calib_free(leankv_calib_q);
     leankv_calib_q = nullptr;
+    leankv_calib_free(leankv_calib_kpre);
+    leankv_calib_kpre = nullptr;
 
     // LeanKV: finalize KV-importance collection (writes kv_stats.json)
     leankv_kvimp_free(leankv_kvimp);
@@ -5953,22 +5955,35 @@ static bool expert_log_sched_eval_cb(struct ggml_tensor * t, bool ask, void * us
 // and writes raw tensor bytes to the calibration file. Layer index is
 // parsed from the name suffix.
 static int leankv_calib_sched_eval_cb(struct ggml_tensor * t, bool ask, void * user_data) {
-    static const char * const k_prefix = "leankv_k_calib-";
-    static const char * const q_prefix = "leankv_q_calib-";
-    static const size_t prefix_len     = 15;
+    static const char * const k_prefix    = "leankv_k_calib-";
+    static const char * const q_prefix    = "leankv_q_calib-";
+    static const char * const kpre_prefix = "leankv_kpre_calib-";
+    static const size_t prefix_len      = 15; // "leankv_k_calib-" / "leankv_q_calib-"
+    static const size_t kpre_prefix_len = 18; // "leankv_kpre_calib-"
     if (ask) {
-        return strncmp(t->name, k_prefix, prefix_len) == 0 ||
-               strncmp(t->name, q_prefix, prefix_len) == 0;
+        return strncmp(t->name, k_prefix,    prefix_len)      == 0 ||
+               strncmp(t->name, q_prefix,    prefix_len)      == 0 ||
+               strncmp(t->name, kpre_prefix, kpre_prefix_len) == 0;
     }
     llama_context * lctx = static_cast<llama_context *>(user_data);
     if (!lctx) return true;
 
-    // "leankv_q_calib-" vs "leankv_k_calib-": the k/q tag is at index 7.
-    const bool is_q = t->name[7] == 'q';
-    leankv_calib_state * s = is_q ? lctx->leankv_calib_q : lctx->leankv_calib;
+    // Route by prefix. Pre-RoPE K ("leankv_kpre_calib-") is checked first since
+    // it shares the k/q index-7 discriminator with the post-RoPE K stream.
+    leankv_calib_state * s;
+    size_t              tag_len;
+    if (strncmp(t->name, kpre_prefix, kpre_prefix_len) == 0) {
+        s       = lctx->leankv_calib_kpre;
+        tag_len = kpre_prefix_len;
+    } else {
+        // "leankv_q_calib-" vs "leankv_k_calib-": the k/q tag is at index 7.
+        const bool is_q = t->name[7] == 'q';
+        s       = is_q ? lctx->leankv_calib_q : lctx->leankv_calib;
+        tag_len = prefix_len;
+    }
     if (!s) return true;
 
-    const int il = std::atoi(t->name + prefix_len);
+    const int il = std::atoi(t->name + tag_len);
     leankv_calib_dump_tensor(s, t, il);
     return true;
 }
@@ -6313,7 +6328,7 @@ static int llama_decode_internal(
             // Passes llama_context* as user_data (Phase 2c used FILE*; unified for Phase 3b).
             // LeanKV Phase 7: if calibration dump is active, it takes priority (and
             // precludes expert logging for this run — they'd need a chained callback).
-            if (lctx.leankv_calib || lctx.leankv_calib_q) {
+            if (lctx.leankv_calib || lctx.leankv_calib_q || lctx.leankv_calib_kpre) {
                 ggml_backend_sched_set_eval_callback(lctx.sched, leankv_calib_sched_eval_cb, &lctx);
             } else if (lctx.leankv_kvimp) {
                 ggml_backend_sched_set_eval_callback(lctx.sched, leankv_kvimp_sched_eval_cb, &lctx);
@@ -7909,6 +7924,10 @@ struct llama_context * llama_init_from_model(
     // LeanKV attention-fidelity study: optional second dump for post-RoPE Q
     // (LEANKV_CALIBRATION_DUMP_Q_PATH alongside the dump above). No-op otherwise.
     ctx->leankv_calib_q = leankv_calib_init_q();
+
+    // LeanKV pre-RoPE study: optional third dump for pre-RoPE K
+    // (LEANKV_CALIBRATION_DUMP_KPRE_PATH alongside the dump above). No-op otherwise.
+    ctx->leankv_calib_kpre = leankv_calib_init_kpre();
 
     // LeanKV: initialize KV-importance collection if LEANKV_KVIMP=1 is set.
     // Geometry (incl. Gemma-4 KV sharing) is derived from model hparams.

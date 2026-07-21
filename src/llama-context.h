@@ -343,6 +343,12 @@ struct llama_context {
     // separate file. Only active alongside leankv_calib.
     struct leankv_calib_state * leankv_calib_q = nullptr;
 
+    // LeanKV pre-RoPE study: optional third dump state for the PRE-RoPE K
+    // tensors (LEANKV_CALIBRATION_DUMP_KPRE_PATH). Same KCAL format, separate
+    // file. Only active alongside leankv_calib. Tests the KVQuant/KIVI premise
+    // that pre-RoPE per-channel K quantization beats post-RoPE.
+    struct leankv_calib_state * leankv_calib_kpre = nullptr;
+
     // LeanKV: KV-importance calibration collector (kv_stats.json for the
     // offline per-head bit allocator). Enabled via LEANKV_KVIMP=1.
     // See src/leankv-kvimp.h.

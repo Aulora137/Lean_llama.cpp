@@ -1,6 +1,7 @@
 #include "../llama-build-context.h"
 #include "../llama-model.h"
 #include "../llama-context.h"
+#include "../leankv-calib.h"
 
 static int gemma4_mtp_target_kv_layer(const llama_hparams & mtp_hparams, const llama_hparams & target_hparams, int mtp_il) {
     GGML_ASSERT(mtp_il >= 0 && mtp_il < (int) mtp_hparams.n_layer);
@@ -1008,6 +1009,12 @@ ggml_cgraph * llm_build_context::build_gemma4() {
                     ext_factor, attn_factor, beta_fast, beta_slow);
             cb(Qcur, "Qcur_rope", il);
             if (hparams.has_kv(il)) {
+                // LeanKV pre-RoPE study: name K before its rope_ext so the
+                // scheduler eval callback dumps it (leankv_kpre_calib-). No-op
+                // when the env is unset. Hedge for the wv-less gemma4 path.
+                if (leankv_calib_kpre_capture_required()) {
+                    ggml_format_name(Kcur, "leankv_kpre_calib-%d", (int) il);
+                }
                 Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, freq_factors, n_rot_l, rope_type, n_ctx_orig, freq_base_l, freq_scale_l,
                         ext_factor, attn_factor, beta_fast, beta_slow);
                 cb(Kcur, "Kcur_rope", il);
