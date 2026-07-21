@@ -397,7 +397,7 @@ def main():
     ap.add_argument("--report", action="store_true", help="print per-layer table")
     ap.add_argument("--emit-types", default=None, metavar="FILE",
                     help="write per-layer '<il> <ktype> <vtype>' plan for LEANKV_KV_PLAN "
-                         "(bits map 2/3/4->tq2_0/tq3_0/tq4_0, >=5->q8_0; use --bmax 4 for an "
+                         "(bits map 2/3/4->ktq2_0/ktq3_0/ktq4_0, >=5->q8_0; use --bmax 4 for an "
                          "exact TQ ladder; GQA reduces per-layer via max bits — exact on MQA)")
     args = ap.parse_args()
 
@@ -418,7 +418,7 @@ def main():
 
     json.dump(plan, open(args.out, "w"), indent=2)
     if args.emit_types:
-        B2T = {2: "tq2_0", 3: "tq3_0", 4: "tq4_0"}
+        B2T = {2: "ktq2_0", 3: "ktq3_0", 4: "ktq4_0"}
         def red(entry):
             bs = []
             for _h, b in entry.items():

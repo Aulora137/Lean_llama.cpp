@@ -872,57 +872,57 @@ static const ggml_type_traits_t type_traits[GGML_TYPE_COUNT] = {
         .row_meta_size            = 0,
     },
     // LeanKV TurboQuant: 2-bit Lloyd-Max (cold storage for oldest KV cache tokens)
-    [GGML_TYPE_TQ2_0] = {
-        .type_name                = "tq2_0",
+    [GGML_TYPE_KTQ2_0] = {
+        .type_name                = "ktq2_0",
         .blck_size                = QK_TQ2,
-        .type_size                = sizeof(block_tq2_0),
+        .type_size                = sizeof(block_ktq2_0),
         .is_quantized             = true,
-        .to_float                 = (ggml_to_float_t) dequantize_row_tq2_0,
-        .from_float               = quantize_row_tq2_0,
-        .from_float_ref           = (ggml_from_float_t) quantize_row_tq2_0_ref,
-        .vec_dot                  = ggml_vec_dot_tq2_0_q8_0,
+        .to_float                 = (ggml_to_float_t) dequantize_row_ktq2_0,
+        .from_float               = quantize_row_ktq2_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_ktq2_0_ref,
+        .vec_dot                  = ggml_vec_dot_ktq2_0_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
         .row_meta_size            = 0,
     },
     // LeanKV TurboQuant: mixed-precision TQ3+TQ2 outlier (2.75 bits/elem, head_dim=128)
-    [GGML_TYPE_TQ2_1] = {
-        .type_name                = "tq2_1",
+    [GGML_TYPE_KTQ2_1] = {
+        .type_name                = "ktq2_1",
         .blck_size                = QK_TQ2_1,
-        .type_size                = sizeof(block_tq2_1),
+        .type_size                = sizeof(block_ktq2_1),
         .is_quantized             = true,
-        .to_float                 = (ggml_to_float_t) dequantize_row_tq2_1,
-        .from_float               = quantize_row_tq2_1,
-        .from_float_ref           = (ggml_from_float_t) quantize_row_tq2_1_ref,
-        .vec_dot                  = ggml_vec_dot_tq2_1_q8_0,
+        .to_float                 = (ggml_to_float_t) dequantize_row_ktq2_1,
+        .from_float               = quantize_row_ktq2_1,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_ktq2_1_ref,
+        .vec_dot                  = ggml_vec_dot_ktq2_1_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
         .row_meta_size            = 0,
     },
     // LeanKV TurboQuant: 3-bit Lloyd-Max (optimal for post-Hadamard Gaussian distribution)
-    [GGML_TYPE_TQ3_0] = {
-        .type_name                = "tq3_0",
+    [GGML_TYPE_KTQ3_0] = {
+        .type_name                = "ktq3_0",
         .blck_size                = QK_TQ3,
-        .type_size                = sizeof(block_tq3_0),
+        .type_size                = sizeof(block_ktq3_0),
         .is_quantized             = true,
-        .to_float                 = (ggml_to_float_t) dequantize_row_tq3_0,
-        .from_float               = quantize_row_tq3_0,
-        .from_float_ref           = (ggml_from_float_t) quantize_row_tq3_0_ref,
-        .vec_dot                  = ggml_vec_dot_tq3_0_q8_0,
+        .to_float                 = (ggml_to_float_t) dequantize_row_ktq3_0,
+        .from_float               = quantize_row_ktq3_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_ktq3_0_ref,
+        .vec_dot                  = ggml_vec_dot_ktq3_0_q8_0,
         .vec_dot_type             = GGML_TYPE_Q8_0,
         .nrows                    = 1,
         .row_meta_size            = 0,
     },
     // LeanKV TurboQuant: 4-bit Lloyd-Max
-    [GGML_TYPE_TQ4_0] = {
-        .type_name                = "tq4_0",
+    [GGML_TYPE_KTQ4_0] = {
+        .type_name                = "ktq4_0",
         .blck_size                = QK_TQ4,
-        .type_size                = sizeof(block_tq4_0),
+        .type_size                = sizeof(block_ktq4_0),
         .is_quantized             = true,
-        .to_float                 = (ggml_to_float_t) dequantize_row_tq4_0,
-        .from_float               = quantize_row_tq4_0,
-        .from_float_ref           = (ggml_from_float_t) quantize_row_tq4_0_ref,
-        .vec_dot                  = ggml_vec_dot_tq4_0_q8_0,
+        .to_float                 = (ggml_to_float_t) dequantize_row_ktq4_0,
+        .from_float               = quantize_row_ktq4_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_ktq4_0_ref,
+        .vec_dot                  = ggml_vec_dot_ktq4_0_q8_0,
 #if __AVX2__
         .vec_dot_type             = GGML_TYPE_Q8_2_X4,
 #else
@@ -19878,10 +19878,10 @@ static void ggml_compute_forward_clamp(
         case GGML_TYPE_Q4_0_4_4:
         case GGML_TYPE_Q4_0_4_8:
         case GGML_TYPE_Q4_0_8_8:
-        case GGML_TYPE_TQ2_0:
-        case GGML_TYPE_TQ2_1:
-        case GGML_TYPE_TQ3_0:
-        case GGML_TYPE_TQ4_0:
+        case GGML_TYPE_KTQ2_0:
+        case GGML_TYPE_KTQ2_1:
+        case GGML_TYPE_KTQ3_0:
+        case GGML_TYPE_KTQ4_0:
         case GGML_TYPE_I8:
         case GGML_TYPE_I16:
         case GGML_TYPE_I32:

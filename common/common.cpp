@@ -4190,17 +4190,21 @@ static ggml_type kv_cache_type_from_str(const std::string & s) {
     if (s == "q8_KV") {
         return GGML_TYPE_Q8_KV;
     }
-    if (s == "tq2_0") {
-        return GGML_TYPE_TQ2_0;
+    // LeanKV KV-cache TurboQuant types. Canonical names are ktq*_0 (renamed from
+    // tq*_0 to free the TQ1_0/TQ2_0 names for mainline's ternary WEIGHT quants).
+    // The legacy tq*_0 spellings are kept as aliases so existing -ctk/-ctv flags
+    // and plan files keep working.
+    if (s == "ktq2_0" || s == "tq2_0") {
+        return GGML_TYPE_KTQ2_0;
     }
-    if (s == "tq2_1") {
-        return GGML_TYPE_TQ2_1;
+    if (s == "ktq2_1" || s == "tq2_1") {
+        return GGML_TYPE_KTQ2_1;
     }
-    if (s == "tq3_0") {
-        return GGML_TYPE_TQ3_0;
+    if (s == "ktq3_0" || s == "tq3_0") {
+        return GGML_TYPE_KTQ3_0;
     }
-    if (s == "tq4_0") {
-        return GGML_TYPE_TQ4_0;
+    if (s == "ktq4_0" || s == "tq4_0") {
+        return GGML_TYPE_KTQ4_0;
     }
 
     throw std::runtime_error("Invalid cache type: " + s);
@@ -4381,10 +4385,10 @@ struct llama_context_params common_context_params_to_llama(const gpt_params & pa
     // Can be overridden with LLAMA_ARG_NO_AUTO_HADAMARD=1 for diagnostic testing
     const char * no_auto_had = getenv("LLAMA_ARG_NO_AUTO_HADAMARD");
     if (no_auto_had == NULL || no_auto_had[0] != '1') {
-        if (cparams.type_k == GGML_TYPE_TQ2_0 || cparams.type_k == GGML_TYPE_TQ3_0 || cparams.type_k == GGML_TYPE_TQ4_0 || cparams.type_k == GGML_TYPE_TQ2_1) {
+        if (cparams.type_k == GGML_TYPE_KTQ2_0 || cparams.type_k == GGML_TYPE_KTQ3_0 || cparams.type_k == GGML_TYPE_KTQ4_0 || cparams.type_k == GGML_TYPE_KTQ2_1) {
             cparams.k_cache_hadamard = true;
         }
-        if (cparams.type_v == GGML_TYPE_TQ2_0 || cparams.type_v == GGML_TYPE_TQ3_0 || cparams.type_v == GGML_TYPE_TQ4_0 || cparams.type_v == GGML_TYPE_TQ2_1) {
+        if (cparams.type_v == GGML_TYPE_KTQ2_0 || cparams.type_v == GGML_TYPE_KTQ3_0 || cparams.type_v == GGML_TYPE_KTQ4_0 || cparams.type_v == GGML_TYPE_KTQ2_1) {
             cparams.v_cache_hadamard = true;
         }
     } else {

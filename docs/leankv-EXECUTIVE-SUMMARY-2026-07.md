@@ -145,7 +145,10 @@ published numbers to within the band and independently re-derive its mechanism.
 1. **Vector quantization revisited** — lattice VQ (no stored codebook) is the one
    sub-3-bit path not blocked by a theorem; PQ died on codebook overhead, not quality.
 2. **Weight quantization ladder** — KV is now 0.13% of the 8 GB model's footprint; the
-   next big memory lever is weights (Q4→Q3→Q2/IQ2), untested on our targets.
+   next big memory lever is weights (Q4→Q3→Q2/IQ2), untested on our targets. The path to
+   porting mainline's ternary/1-bit weight types (Bonsai, Hunyuan Hy3) is now clear: the
+   KV types were renamed `tq*_0`→`ktq*_0` (freeing the `TQ1_0`/`TQ2_0` names), with
+   `tq*_0` kept as legacy aliases — see `leankv-ktq-rename-2026-07.md`.
 3. **In-engine auto-config-at-load** — the prober is wired at launch; classify-in-C is
    the follow-on.
 4. **Long-context validation** — all quality numbers are at 2K ctx; the global-layer /

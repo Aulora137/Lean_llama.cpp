@@ -32,12 +32,12 @@ int main(void) {
 
     // Process in 32-element blocks (same as noise op)
     for (int b = 0; b < N / 32; b++) {
-        block_tq3_0 blk;
-        quantize_row_tq3_0_ref(input + b * 32, &blk, 32);
+        block_ktq3_0 blk;
+        quantize_row_ktq3_0_ref(input + b * 32, &blk, 32);
 
         // no block-level debug
 
-        dequantize_row_tq3_0(&blk, input + b * 32, 32);
+        dequantize_row_ktq3_0(&blk, input + b * 32, 32);
     }
 
     // Print first 8 output values
@@ -78,9 +78,9 @@ int main(void) {
     printf("\n--- TQ2 roundtrip ---\n");
     memcpy(input, backup, sizeof(input));
     for (int b = 0; b < N / 32; b++) {
-        block_tq2_0 blk;
-        quantize_row_tq2_0_ref(input + b * 32, &blk, 32);
-        dequantize_row_tq2_0(&blk, input + b * 32, 32);
+        block_ktq2_0 blk;
+        quantize_row_ktq2_0_ref(input + b * 32, &blk, 32);
+        dequantize_row_ktq2_0(&blk, input + b * 32, 32);
     }
     sig2 = 0; err2 = 0;
     for (int i = 0; i < N; i++) {

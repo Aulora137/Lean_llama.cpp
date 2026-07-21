@@ -314,7 +314,7 @@ static inline float tq_block_scale(const float * block, int n, int bits, float a
 
 /* ── TQ2_0 ─────────────────────────────────────────────────────────── */
 
-void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RESTRICT y, int64_t k) {
+void quantize_row_ktq2_0_ref(const float * GGML_RESTRICT x, block_ktq2_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ2 == 0);
     const int nb = (int)(k / QK_TQ2);
 
@@ -347,7 +347,7 @@ void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RE
     }
 }
 
-void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+void dequantize_row_ktq2_0(const block_ktq2_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ2 == 0);
     const int nb = (int)(k / QK_TQ2);
 
@@ -364,8 +364,8 @@ void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_REST
     }
 }
 
-void quantize_row_tq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
-    quantize_row_tq2_0_ref(x, (block_tq2_0 *)y, k);
+void quantize_row_ktq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_ktq2_0_ref(x, (block_ktq2_0 *)y, k);
 }
 
 /* ── TQ3_0 ─────────────────────────────────────────────────────────── */
@@ -393,7 +393,7 @@ static inline float tq3_block_mse(const float * block, const uint8_t * indices, 
     return mse;
 }
 
-void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RESTRICT y, int64_t k) {
+void quantize_row_ktq3_0_ref(const float * GGML_RESTRICT x, block_ktq3_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ3 == 0);
     const int nb = (int)(k / QK_TQ3);
 
@@ -476,7 +476,7 @@ void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RE
     }
 }
 
-void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+void dequantize_row_ktq3_0(const block_ktq3_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ3 == 0);
     const int nb = (int)(k / QK_TQ3);
 
@@ -497,13 +497,13 @@ void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_REST
     }
 }
 
-void quantize_row_tq3_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
-    quantize_row_tq3_0_ref(x, (block_tq3_0 *)y, k);
+void quantize_row_ktq3_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_ktq3_0_ref(x, (block_ktq3_0 *)y, k);
 }
 
 /* ── TQ4_0 ─────────────────────────────────────────────────────────── */
 
-void quantize_row_tq4_0_ref(const float * GGML_RESTRICT x, block_tq4_0 * GGML_RESTRICT y, int64_t k) {
+void quantize_row_ktq4_0_ref(const float * GGML_RESTRICT x, block_ktq4_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ4 == 0);
     const int nb = (int)(k / QK_TQ4);
 
@@ -535,7 +535,7 @@ void quantize_row_tq4_0_ref(const float * GGML_RESTRICT x, block_tq4_0 * GGML_RE
     }
 }
 
-void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+void dequantize_row_ktq4_0(const block_ktq4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ4 == 0);
     const int nb = (int)(k / QK_TQ4);
 
@@ -555,13 +555,13 @@ void dequantize_row_tq4_0(const block_tq4_0 * GGML_RESTRICT x, float * GGML_REST
     }
 }
 
-void quantize_row_tq4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
-    quantize_row_tq4_0_ref(x, (block_tq4_0 *)y, k);
+void quantize_row_ktq4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_ktq4_0_ref(x, (block_ktq4_0 *)y, k);
 }
 
 /* ── vec_dot: TQ3_0 · Q8_0 and TQ4_0 · Q8_0 ──────────────────────── */
 
-void ggml_vec_dot_tq3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+void ggml_vec_dot_ktq3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK_TQ3;
@@ -571,7 +571,7 @@ void ggml_vec_dot_tq3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
     assert(nrc == 1);
     (void)bs; (void)bx; (void)by; (void)nrc;
 
-    const block_tq3_0 * GGML_RESTRICT x = (const block_tq3_0 *) vx;
+    const block_ktq3_0 * GGML_RESTRICT x = (const block_ktq3_0 *) vx;
     const block_q8_0  * GGML_RESTRICT y = (const block_q8_0  *) vy;
 
     /* LeanKV 7a Stage 4a: shadow the file-scope defaults with runtime LUTs. */
@@ -676,7 +676,7 @@ void ggml_vec_dot_tq3_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
     *s = sumf;
 }
 
-void ggml_vec_dot_tq4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+void ggml_vec_dot_ktq4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK_TQ4;
@@ -686,7 +686,7 @@ void ggml_vec_dot_tq4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
     assert(nrc == 1);
     (void)bs; (void)bx; (void)by; (void)nrc;
 
-    const block_tq4_0 * GGML_RESTRICT x = (const block_tq4_0 *) vx;
+    const block_ktq4_0 * GGML_RESTRICT x = (const block_ktq4_0 *) vx;
     const block_q8_0  * GGML_RESTRICT y = (const block_q8_0  *) vy;
 
     /* LeanKV 7a Stage 4a: shadow the file-scope defaults with runtime LUTs. */
@@ -774,7 +774,7 @@ void ggml_vec_dot_tq4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
 
 /* ── vec_dot: TQ2_0 · Q8_0 ───────────────────────────────────────── */
 
-void ggml_vec_dot_tq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+void ggml_vec_dot_ktq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK_TQ2;
@@ -784,7 +784,7 @@ void ggml_vec_dot_tq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
     assert(nrc == 1);
     (void)bs; (void)bx; (void)by; (void)nrc;
 
-    const block_tq2_0 * GGML_RESTRICT x = (const block_tq2_0 *) vx;
+    const block_ktq2_0 * GGML_RESTRICT x = (const block_ktq2_0 *) vx;
     const block_q8_0  * GGML_RESTRICT y = (const block_q8_0  *) vy;
 
     /* LeanKV 7a Stage 4a: shadow the file-scope defaults with runtime LUTs. */
@@ -882,7 +882,7 @@ void ggml_vec_dot_tq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
  * Block size: 128 elements (32 outlier as TQ3, 96 normal as 3×TQ2)
  * ══════════════════════════════════════════════════════════════════════ */
 
-void dequantize_row_tq2_1(const block_tq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+void dequantize_row_ktq2_1(const block_ktq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ2_1 == 0);
     const int nb = (int)(k / QK_TQ2_1);
 
@@ -921,7 +921,7 @@ void dequantize_row_tq2_1(const block_tq2_1 * GGML_RESTRICT x, float * GGML_REST
     }
 }
 
-void quantize_row_tq2_1_ref(const float * GGML_RESTRICT x, block_tq2_1 * GGML_RESTRICT y, int64_t k) {
+void quantize_row_ktq2_1_ref(const float * GGML_RESTRICT x, block_ktq2_1 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TQ2_1 == 0);
     const int nb = (int)(k / QK_TQ2_1);
 
@@ -930,16 +930,16 @@ void quantize_row_tq2_1_ref(const float * GGML_RESTRICT x, block_tq2_1 * GGML_RE
 
         /* Quantize outlier region (elements 0-31) as TQ3 */
         {
-            block_tq3_0 tmp;
-            quantize_row_tq3_0_ref(block, &tmp, 32);
+            block_ktq3_0 tmp;
+            quantize_row_ktq3_0_ref(block, &tmp, 32);
             y[i].d_out = tmp.d;
             memcpy(y[i].qs_out, tmp.qs, 12);
         }
 
         /* Quantize normal region (elements 32-127) as 3 × TQ2 blocks */
         {
-            block_tq2_0 tmp[3];
-            quantize_row_tq2_0_ref(block + 32, tmp, 96);
+            block_ktq2_0 tmp[3];
+            quantize_row_ktq2_0_ref(block + 32, tmp, 96);
             y[i].d_n0 = tmp[0].d;
             memcpy(y[i].qs_n0, tmp[0].qs, 8);
             y[i].d_n1 = tmp[1].d;
@@ -950,18 +950,18 @@ void quantize_row_tq2_1_ref(const float * GGML_RESTRICT x, block_tq2_1 * GGML_RE
     }
 }
 
-void quantize_row_tq2_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
-    quantize_row_tq2_1_ref(x, (block_tq2_1 *)y, k);
+void quantize_row_ktq2_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_ktq2_1_ref(x, (block_ktq2_1 *)y, k);
 }
 
-void ggml_vec_dot_tq2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
+void ggml_vec_dot_ktq2_1_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(n % QK_TQ2_1 == 0);
     assert(nrc == 1);
     (void)bs; (void)bx; (void)by; (void)nrc;
 
-    const block_tq2_1 * GGML_RESTRICT x2 = (const block_tq2_1 *) vx;
+    const block_ktq2_1 * GGML_RESTRICT x2 = (const block_ktq2_1 *) vx;
     const block_q8_0  * GGML_RESTRICT y8 = (const block_q8_0  *) vy;
 
     /* LeanKV 7a Stage 4a: runtime LUTs for the mixed-bit vec_dot. */

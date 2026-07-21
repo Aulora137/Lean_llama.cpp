@@ -29,11 +29,11 @@ static inline int tier_block_size(tq_tier_t tier) {
 
 static inline size_t tier_block_bytes(tq_tier_t tier) {
     switch (tier) {
-        case TQ_TIER_TQ2: return sizeof(block_tq2_0);  /* 10 */
-        case TQ_TIER_TQ3: return sizeof(block_tq3_0);  /* 14 */
-        case TQ_TIER_TQ4: return sizeof(block_tq4_0);  /* 18 */
+        case TQ_TIER_TQ2: return sizeof(block_ktq2_0);  /* 10 */
+        case TQ_TIER_TQ3: return sizeof(block_ktq3_0);  /* 14 */
+        case TQ_TIER_TQ4: return sizeof(block_ktq4_0);  /* 18 */
     }
-    return sizeof(block_tq2_0);
+    return sizeof(block_ktq2_0);
 }
 
 static inline float tier_bpe(tq_tier_t tier) {
@@ -50,13 +50,13 @@ static inline float tier_bpe(tq_tier_t tier) {
 static void tier_quantize(const float * x, void * buf, int n, tq_tier_t tier) {
     switch (tier) {
         case TQ_TIER_TQ2:
-            quantize_row_tq2_0_ref(x, (block_tq2_0 *)buf, n);
+            quantize_row_ktq2_0_ref(x, (block_ktq2_0 *)buf, n);
             break;
         case TQ_TIER_TQ3:
-            quantize_row_tq3_0_ref(x, (block_tq3_0 *)buf, n);
+            quantize_row_ktq3_0_ref(x, (block_ktq3_0 *)buf, n);
             break;
         case TQ_TIER_TQ4:
-            quantize_row_tq4_0_ref(x, (block_tq4_0 *)buf, n);
+            quantize_row_ktq4_0_ref(x, (block_ktq4_0 *)buf, n);
             break;
     }
 }
@@ -64,13 +64,13 @@ static void tier_quantize(const float * x, void * buf, int n, tq_tier_t tier) {
 static void tier_dequantize(const void * buf, float * y, int n, tq_tier_t tier) {
     switch (tier) {
         case TQ_TIER_TQ2:
-            dequantize_row_tq2_0((const block_tq2_0 *)buf, y, n);
+            dequantize_row_ktq2_0((const block_ktq2_0 *)buf, y, n);
             break;
         case TQ_TIER_TQ3:
-            dequantize_row_tq3_0((const block_tq3_0 *)buf, y, n);
+            dequantize_row_ktq3_0((const block_ktq3_0 *)buf, y, n);
             break;
         case TQ_TIER_TQ4:
-            dequantize_row_tq4_0((const block_tq4_0 *)buf, y, n);
+            dequantize_row_ktq4_0((const block_ktq4_0 *)buf, y, n);
             break;
     }
 }

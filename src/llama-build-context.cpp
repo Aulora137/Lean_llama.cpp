@@ -117,18 +117,18 @@ static void tq_mixed_noise_op(
             const int nb = hd / QK_TQ3;
             for (int b = 0; b < nb; b++) {
                 float * blk_data = row + b * QK_TQ3;
-                block_tq3_0 blk;
-                quantize_row_tq3_0_ref(blk_data, &blk, QK_TQ3);
-                dequantize_row_tq3_0(&blk, blk_data, QK_TQ3);
+                block_ktq3_0 blk;
+                quantize_row_ktq3_0_ref(blk_data, &blk, QK_TQ3);
+                dequantize_row_ktq3_0(&blk, blk_data, QK_TQ3);
             }
         } else if (mode == 2) {
             // TQ2-only: quantize ALL channels as TQ2
             const int nb = hd / QK_TQ2;
             for (int b = 0; b < nb; b++) {
                 float * blk_data = row + b * QK_TQ2;
-                block_tq2_0 blk;
-                quantize_row_tq2_0_ref(blk_data, &blk, QK_TQ2);
-                dequantize_row_tq2_0(&blk, blk_data, QK_TQ2);
+                block_ktq2_0 blk;
+                quantize_row_ktq2_0_ref(blk_data, &blk, QK_TQ2);
+                dequantize_row_ktq2_0(&blk, blk_data, QK_TQ2);
             }
         } else {
             // Mixed: outlier channels TQ3, normal channels TQ2
@@ -138,18 +138,18 @@ static void tq_mixed_noise_op(
                 const int nb3 = n_out / QK_TQ3;
                 for (int b = 0; b < nb3; b++) {
                     float * blk_data = row + b * QK_TQ3;
-                    block_tq3_0 blk;
-                    quantize_row_tq3_0_ref(blk_data, &blk, QK_TQ3);
-                    dequantize_row_tq3_0(&blk, blk_data, QK_TQ3);
+                    block_ktq3_0 blk;
+                    quantize_row_ktq3_0_ref(blk_data, &blk, QK_TQ3);
+                    dequantize_row_ktq3_0(&blk, blk_data, QK_TQ3);
                 }
             }
             if (n_norm > 0) {
                 const int nb2 = n_norm / QK_TQ2;
                 for (int b = 0; b < nb2; b++) {
                     float * blk_data = row + n_out + b * QK_TQ2;
-                    block_tq2_0 blk;
-                    quantize_row_tq2_0_ref(blk_data, &blk, QK_TQ2);
-                    dequantize_row_tq2_0(&blk, blk_data, QK_TQ2);
+                    block_ktq2_0 blk;
+                    quantize_row_ktq2_0_ref(blk_data, &blk, QK_TQ2);
+                    dequantize_row_ktq2_0(&blk, blk_data, QK_TQ2);
                 }
             }
         }

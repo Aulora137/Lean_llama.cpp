@@ -174,7 +174,7 @@ static __device__ __forceinline__ int tq2_unpack_idx(const uint8_t * qs, int ele
 // Convention: iqs=0..15, v.x=elem[iqs], v.y=elem[iqs+16]
 // Packing: qs[i] low nibble = elem[i], high nibble = elem[i+16]
 static __device__ __forceinline__ void dequantize_tq4_0(const void * vx, const int64_t ib, const int iqs, dfloat2 & v){
-    const block_tq4_0 * x = (const block_tq4_0 *) vx;
+    const block_ktq4_0 * x = (const block_ktq4_0 *) vx;
     const float d = __half2float(x[ib].d);
 
     const uint8_t byte = x[ib].qs[iqs];
@@ -186,7 +186,7 @@ static __device__ __forceinline__ void dequantize_tq4_0(const void * vx, const i
 // Convention: iqs=0..15, v.x=elem[iqs], v.y=elem[iqs+16]
 // Packing: qs[8 bytes], element i is at qs[i/4] bits (i%4)*2..(i%4)*2+1
 static __device__ __forceinline__ void dequantize_tq2_0(const void * vx, const int64_t ib, const int iqs, dfloat2 & v){
-    const block_tq2_0 * x = (const block_tq2_0 *) vx;
+    const block_ktq2_0 * x = (const block_ktq2_0 *) vx;
     const float d = __half2float(x[ib].d);
 
     const int idx0 = tq2_unpack_idx(x[ib].qs, iqs);
@@ -200,7 +200,7 @@ static __device__ __forceinline__ void dequantize_tq2_0(const void * vx, const i
 // Convention: iqs=0..15, v.x=elem[iqs], v.y=elem[iqs+16]
 // Packing: 4 groups of 8 elements, each group = 3 bytes
 static __device__ __forceinline__ void dequantize_tq3_0(const void * vx, const int64_t ib, const int iqs, dfloat2 & v){
-    const block_tq3_0 * x = (const block_tq3_0 *) vx;
+    const block_ktq3_0 * x = (const block_ktq3_0 *) vx;
     const float d = __half2float(x[ib].d);
 
     // First value: element iqs (0..15)
@@ -218,7 +218,7 @@ static __device__ __forceinline__ void dequantize_tq3_0(const void * vx, const i
 // TQ2_1: 128 elements, mixed TQ3 (32 outlier) + TQ2 (96 normal), QK=128, QR=2
 // Convention: iqs=0..63, v.x=elem[iqs], v.y=elem[iqs+64]
 static __device__ __forceinline__ void dequantize_tq2_1(const void * vx, const int64_t ib, const int iqs, dfloat2 & v){
-    const block_tq2_1 * x = (const block_tq2_1 *) vx;
+    const block_ktq2_1 * x = (const block_ktq2_1 *) vx;
 
     // Decode element at position `pos` within the 128-element block
     auto decode_elem = [&](int pos) -> float {

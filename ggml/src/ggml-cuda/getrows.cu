@@ -179,16 +179,16 @@ void ggml_cuda_op_get_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         case GGML_TYPE_Q8_0:
             get_rows_cuda<QK8_0, QR8_0, dequantize_q8_0>(src0, src1, dst, src0_d, src1_i32, dst_d, stream);
             break;
-        case GGML_TYPE_TQ4_0:
+        case GGML_TYPE_KTQ4_0:
             get_rows_cuda<QK_TQ4, 2, dequantize_tq4_0>(src0, src1, dst, src0_d, src1_i32, dst_d, stream);
             break;
-        case GGML_TYPE_TQ3_0:
+        case GGML_TYPE_KTQ3_0:
             get_rows_cuda<QK_TQ3, 2, dequantize_tq3_0>(src0, src1, dst, src0_d, src1_i32, dst_d, stream);
             break;
-        case GGML_TYPE_TQ2_0:
+        case GGML_TYPE_KTQ2_0:
             get_rows_cuda<QK_TQ2, 2, dequantize_tq2_0>(src0, src1, dst, src0_d, src1_i32, dst_d, stream);
             break;
-        case GGML_TYPE_TQ2_1:
+        case GGML_TYPE_KTQ2_1:
             get_rows_cuda<QK_TQ2_1, 2, dequantize_tq2_1>(src0, src1, dst, src0_d, src1_i32, dst_d, stream);
             break;
         default:

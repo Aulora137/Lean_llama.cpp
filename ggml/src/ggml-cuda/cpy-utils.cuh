@@ -248,7 +248,7 @@ static constexpr __device__ int8_t tq4_levels_i8[16] = {
       +6, +18, +31, +44, +58, +75, +96, +127,
 };
 
-static __device__ void quantize_f32_tq4_0_block(const float * __restrict__ x, block_tq4_0 * __restrict__ y) {
+static __device__ void quantize_f32_tq4_0_block(const float * __restrict__ x, block_ktq4_0 * __restrict__ y) {
     float amax = 0.0f;
 
     for (int j = 0; j < QK_TQ4; ++j) {
@@ -282,7 +282,7 @@ static __device__ void quantize_f32_tq4_0_block(const float * __restrict__ x, bl
     y->d = d_final * 127.0f;
 }
 
-static __device__ void quantize_f32_tq2_0_block(const float * __restrict__ x, block_tq2_0 * __restrict__ y) {
+static __device__ void quantize_f32_tq2_0_block(const float * __restrict__ x, block_ktq2_0 * __restrict__ y) {
     float amax = 0.0f;
 
     for (int j = 0; j < QK_TQ2; ++j) {
@@ -319,7 +319,7 @@ static __device__ void quantize_f32_tq2_0_block(const float * __restrict__ x, bl
     }
 }
 
-static __device__ void quantize_f32_tq3_0_block(const float * __restrict__ x, block_tq3_0 * __restrict__ y) {
+static __device__ void quantize_f32_tq3_0_block(const float * __restrict__ x, block_ktq3_0 * __restrict__ y) {
     float amax = 0.0f;
 
     for (int j = 0; j < QK_TQ3; ++j) {
@@ -428,7 +428,7 @@ static __device__ void quantize_f32_tq2_sub(const float * __restrict__ x, ggml_h
     }
 }
 
-static __device__ void quantize_f32_tq2_1_block(const float * __restrict__ x, block_tq2_1 * __restrict__ y) {
+static __device__ void quantize_f32_tq2_1_block(const float * __restrict__ x, block_ktq2_1 * __restrict__ y) {
     // First 32 elements: outlier channels, TQ3 encoding
     quantize_f32_tq3_sub(x,      &y->d_out, y->qs_out);
     // Next 3x32 elements: normal channels, TQ2 encoding
@@ -467,19 +467,19 @@ static __device__ void cpy_blck_f32_iq4_nl(const char * cxi, char * cdsti) {
 }
 
 static __device__ void cpy_blck_f32_tq4_0(const char * cxi, char * cdsti) {
-    quantize_f32_tq4_0_block((const float *)cxi, (block_tq4_0 *)cdsti);
+    quantize_f32_tq4_0_block((const float *)cxi, (block_ktq4_0 *)cdsti);
 }
 
 static __device__ void cpy_blck_f32_tq2_0(const char * cxi, char * cdsti) {
-    quantize_f32_tq2_0_block((const float *)cxi, (block_tq2_0 *)cdsti);
+    quantize_f32_tq2_0_block((const float *)cxi, (block_ktq2_0 *)cdsti);
 }
 
 static __device__ void cpy_blck_f32_tq3_0(const char * cxi, char * cdsti) {
-    quantize_f32_tq3_0_block((const float *)cxi, (block_tq3_0 *)cdsti);
+    quantize_f32_tq3_0_block((const float *)cxi, (block_ktq3_0 *)cdsti);
 }
 
 static __device__ void cpy_blck_f32_tq2_1(const char * cxi, char * cdsti) {
-    quantize_f32_tq2_1_block((const float *)cxi, (block_tq2_1 *)cdsti);
+    quantize_f32_tq2_1_block((const float *)cxi, (block_ktq2_1 *)cdsti);
 }
 
 template<typename src_t, typename dst_t>

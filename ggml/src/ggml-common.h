@@ -237,8 +237,8 @@ static_assert(sizeof(block_q8_0) == sizeof(ggml_half) + QK8_0, "wrong q8_0 block
 typedef struct {
     ggml_half d;            // per-block scale = max|x| (2 bytes)
     uint8_t  qs[QK_TQ2/4]; // 32 × 2-bit packed indices (8 bytes)
-} block_tq2_0;
-static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_TQ2/4, "wrong tq2_0 block size/padding");
+} block_ktq2_0;
+static_assert(sizeof(block_ktq2_0) == sizeof(ggml_half) + QK_TQ2/4, "wrong tq2_0 block size/padding");
 
 // LeanKV TurboQuant: 3-bit Lloyd-Max optimal quantization
 // Requires Hadamard pre-rotation (k_cache_hadamard=true) for best quality
@@ -246,16 +246,16 @@ static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_TQ2/4, "wrong tq2_0 
 typedef struct {
     ggml_half d;        // per-block scale = max|x| (2 bytes)
     uint8_t  qs[12];    // 32 × 3-bit packed indices (12 bytes)
-} block_tq3_0;
-static_assert(sizeof(block_tq3_0) == sizeof(ggml_half) + 12, "wrong tq3_0 block size/padding");
+} block_ktq3_0;
+static_assert(sizeof(block_ktq3_0) == sizeof(ggml_half) + 12, "wrong tq3_0 block size/padding");
 
 // LeanKV TurboQuant: 4-bit Lloyd-Max optimal quantization
 #define QK_TQ4 32
 typedef struct {
     ggml_half d;            // per-block scale = max|x| (2 bytes)
     uint8_t  qs[QK_TQ4/2]; // 32 × 4-bit packed nibbles (16 bytes)
-} block_tq4_0;
-static_assert(sizeof(block_tq4_0) == sizeof(ggml_half) + QK_TQ4/2, "wrong tq4_0 block size/padding");
+} block_ktq4_0;
+static_assert(sizeof(block_ktq4_0) == sizeof(ggml_half) + QK_TQ4/2, "wrong tq4_0 block size/padding");
 
 // LeanKV TurboQuant: mixed-precision 2.75-bit (outlier TQ3 + normal TQ2)
 // 128 elements per block: 32 outlier channels at 3.5 bpe + 96 normal channels at 2.5 bpe
@@ -270,8 +270,8 @@ typedef struct {
     uint8_t   qs_n1[8];
     ggml_half d_n2;        // normal block 2 scale (elements 96-127)
     uint8_t   qs_n2[8];
-} block_tq2_1;
-static_assert(sizeof(block_tq2_1) == 44, "wrong tq2_1 block size/padding");
+} block_ktq2_1;
+static_assert(sizeof(block_ktq2_1) == 44, "wrong tq2_1 block size/padding");
 
 #define QK8_1 32
 typedef struct {

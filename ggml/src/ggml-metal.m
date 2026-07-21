@@ -1378,8 +1378,8 @@ static bool ggml_metal_supports_op(const struct ggml_backend_metal_context * ctx
             }
             if (op->src[1]->type != op->src[2]->type ||
                (op->src[1]->type != GGML_TYPE_F16  && op->src[1]->type != GGML_TYPE_Q8_0 &&
-                op->src[1]->type != GGML_TYPE_TQ2_0 && op->src[1]->type != GGML_TYPE_TQ2_1 && op->src[1]->type != GGML_TYPE_TQ3_0 &&
-                op->src[1]->type != GGML_TYPE_TQ4_0)) {
+                op->src[1]->type != GGML_TYPE_KTQ2_0 && op->src[1]->type != GGML_TYPE_KTQ2_1 && op->src[1]->type != GGML_TYPE_KTQ3_0 &&
+                op->src[1]->type != GGML_TYPE_KTQ4_0)) {
                 return false;
             }
             if (op->src[1]->ne[0] != op->src[2]->ne[0]) {
@@ -1412,10 +1412,10 @@ static bool ggml_metal_supports_op(const struct ggml_backend_metal_context * ctx
                            case GGML_TYPE_Q5_1:
                            case GGML_TYPE_Q6_0:
                            case GGML_TYPE_IQ4_NL:
-                           case GGML_TYPE_TQ2_0:
-                           case GGML_TYPE_TQ2_1:
-                           case GGML_TYPE_TQ3_0:
-                           case GGML_TYPE_TQ4_0:
+                           case GGML_TYPE_KTQ2_0:
+                           case GGML_TYPE_KTQ2_1:
+                           case GGML_TYPE_KTQ3_0:
+                           case GGML_TYPE_KTQ4_0:
                                 return true;
                            default:
                                 return false;
@@ -2367,10 +2367,10 @@ static void ggml_metal_encode_node(
                                     case GGML_TYPE_Q6_0:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q6_0_F32   ].pipeline; break;
                                     case GGML_TYPE_Q5_1:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q5_1_F32   ].pipeline; break;
                                     case GGML_TYPE_Q8_0:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q8_0_F32   ].pipeline; break;
-                                    case GGML_TYPE_TQ2_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ2_0_F32  ].pipeline; break;
-                                    case GGML_TYPE_TQ2_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ2_1_F32  ].pipeline; break;
-                                    case GGML_TYPE_TQ3_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ3_0_F32  ].pipeline; break;
-                                    case GGML_TYPE_TQ4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ4_0_F32  ].pipeline; break;
+                                    case GGML_TYPE_KTQ2_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ2_0_F32  ].pipeline; break;
+                                    case GGML_TYPE_KTQ2_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ2_1_F32  ].pipeline; break;
+                                    case GGML_TYPE_KTQ3_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ3_0_F32  ].pipeline; break;
+                                    case GGML_TYPE_KTQ4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ4_0_F32  ].pipeline; break;
                                     case GGML_TYPE_Q2_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q2_K_F32   ].pipeline; break;
                                     case GGML_TYPE_Q3_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q3_K_F32   ].pipeline; break;
                                     case GGML_TYPE_Q4_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q4_K_F32   ].pipeline; break;
@@ -2416,10 +2416,10 @@ static void ggml_metal_encode_node(
                                     case GGML_TYPE_Q6_0:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q6_0_F16   ].pipeline; break;
                                     case GGML_TYPE_Q5_1:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q5_1_F16   ].pipeline; break;
                                     case GGML_TYPE_Q8_0:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q8_0_F16   ].pipeline; break;
-                                    case GGML_TYPE_TQ2_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ2_0_F16  ].pipeline; break;
-                                    case GGML_TYPE_TQ2_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ2_1_F16  ].pipeline; break;
-                                    case GGML_TYPE_TQ3_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ3_0_F16  ].pipeline; break;
-                                    case GGML_TYPE_TQ4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ4_0_F16  ].pipeline; break;
+                                    case GGML_TYPE_KTQ2_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ2_0_F16  ].pipeline; break;
+                                    case GGML_TYPE_KTQ2_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ2_1_F16  ].pipeline; break;
+                                    case GGML_TYPE_KTQ3_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ3_0_F16  ].pipeline; break;
+                                    case GGML_TYPE_KTQ4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_TQ4_0_F16  ].pipeline; break;
                                     case GGML_TYPE_Q2_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q2_K_F16   ].pipeline; break;
                                     case GGML_TYPE_Q3_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q3_K_F16   ].pipeline; break;
                                     case GGML_TYPE_Q4_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_Q4_K_F16   ].pipeline; break;
@@ -2881,10 +2881,10 @@ static void ggml_metal_encode_node(
                         case GGML_TYPE_Q5_1:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_Q5_1_F32   ].pipeline; break;
                         case GGML_TYPE_Q6_0:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_Q6_0_F32   ].pipeline; break;
                         case GGML_TYPE_Q8_0:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_Q8_0_F32   ].pipeline; break;
-                        case GGML_TYPE_TQ2_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_TQ2_0_F32  ].pipeline; break;
-                        case GGML_TYPE_TQ2_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_TQ2_1_F32  ].pipeline; break;
-                        case GGML_TYPE_TQ3_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_TQ3_0_F32  ].pipeline; break;
-                        case GGML_TYPE_TQ4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_TQ4_0_F32  ].pipeline; break;
+                        case GGML_TYPE_KTQ2_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_TQ2_0_F32  ].pipeline; break;
+                        case GGML_TYPE_KTQ2_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_TQ2_1_F32  ].pipeline; break;
+                        case GGML_TYPE_KTQ3_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_TQ3_0_F32  ].pipeline; break;
+                        case GGML_TYPE_KTQ4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_TQ4_0_F32  ].pipeline; break;
                         case GGML_TYPE_Q2_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_Q2_K_F32   ].pipeline; break;
                         case GGML_TYPE_Q3_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_Q3_K_F32   ].pipeline; break;
                         case GGML_TYPE_Q4_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_MUL_MM_ID_Q4_K_F32   ].pipeline; break;
@@ -3297,10 +3297,10 @@ static void ggml_metal_encode_node(
                     case GGML_TYPE_Q5_1:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_Q5_1   ].pipeline; break;
                     case GGML_TYPE_Q6_0:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_Q6_0   ].pipeline; break;
                     case GGML_TYPE_Q8_0:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_Q8_0   ].pipeline; break;
-                    case GGML_TYPE_TQ2_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_TQ2_0  ].pipeline; break;
-                    case GGML_TYPE_TQ2_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_TQ2_1  ].pipeline; break;
-                    case GGML_TYPE_TQ3_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_TQ3_0  ].pipeline; break;
-                    case GGML_TYPE_TQ4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_TQ4_0  ].pipeline; break;
+                    case GGML_TYPE_KTQ2_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_TQ2_0  ].pipeline; break;
+                    case GGML_TYPE_KTQ2_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_TQ2_1  ].pipeline; break;
+                    case GGML_TYPE_KTQ3_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_TQ3_0  ].pipeline; break;
+                    case GGML_TYPE_KTQ4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_TQ4_0  ].pipeline; break;
                     case GGML_TYPE_Q2_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_Q2_K   ].pipeline; break;
                     case GGML_TYPE_Q3_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_Q3_K   ].pipeline; break;
                     case GGML_TYPE_Q4_K:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_GET_ROWS_Q4_K   ].pipeline; break;
@@ -3908,7 +3908,7 @@ static void ggml_metal_encode_node(
                                     }
                                 }
                             } break;
-                        case GGML_TYPE_TQ2_0:
+                        case GGML_TYPE_KTQ2_0:
                             {
                                 if (ne00 == 192 && ne20 == 128) {
                                     pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_FLASH_ATTN_EXT_TQ2_0_HK192_HV128].pipeline;
@@ -3932,7 +3932,7 @@ static void ggml_metal_encode_node(
                                     }
                                 }
                             } break;
-                        case GGML_TYPE_TQ2_1:
+                        case GGML_TYPE_KTQ2_1:
                             {
                                 if (ne00 == 192 && ne20 == 128) {
                                     pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_FLASH_ATTN_EXT_TQ2_1_HK192_HV128].pipeline;
@@ -3956,7 +3956,7 @@ static void ggml_metal_encode_node(
                                     }
                                 }
                             } break;
-                        case GGML_TYPE_TQ3_0:
+                        case GGML_TYPE_KTQ3_0:
                             {
                                 if (ne00 == 192 && ne20 == 128) {
                                     pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_FLASH_ATTN_EXT_TQ3_0_HK192_HV128].pipeline;
@@ -3980,7 +3980,7 @@ static void ggml_metal_encode_node(
                                     }
                                 }
                             } break;
-                        case GGML_TYPE_TQ4_0:
+                        case GGML_TYPE_KTQ4_0:
                             {
                                 if (ne00 == 192 && ne20 == 128) {
                                     pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_FLASH_ATTN_EXT_TQ4_0_HK192_HV128].pipeline;
@@ -4062,7 +4062,7 @@ static void ggml_metal_encode_node(
                                     }
                                 }
                             } break;
-                        case GGML_TYPE_TQ2_0:
+                        case GGML_TYPE_KTQ2_0:
                             {
                                 if (ne00 == 192 && ne20 == 128) {
                                     pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_FLASH_ATTN_EXT_VEC_TQ2_0_HK192_HV128].pipeline;
@@ -4086,7 +4086,7 @@ static void ggml_metal_encode_node(
                                     }
                                 }
                             } break;
-                        case GGML_TYPE_TQ2_1:
+                        case GGML_TYPE_KTQ2_1:
                             {
                                 if (ne00 == 192 && ne20 == 128) {
                                     pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_FLASH_ATTN_EXT_VEC_TQ2_1_HK192_HV128].pipeline;
@@ -4110,7 +4110,7 @@ static void ggml_metal_encode_node(
                                     }
                                 }
                             } break;
-                        case GGML_TYPE_TQ3_0:
+                        case GGML_TYPE_KTQ3_0:
                             {
                                 if (ne00 == 192 && ne20 == 128) {
                                     pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_FLASH_ATTN_EXT_VEC_TQ3_0_HK192_HV128].pipeline;
@@ -4134,7 +4134,7 @@ static void ggml_metal_encode_node(
                                     }
                                 }
                             } break;
-                        case GGML_TYPE_TQ4_0:
+                        case GGML_TYPE_KTQ4_0:
                             {
                                 if (ne00 == 192 && ne20 == 128) {
                                     pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_FLASH_ATTN_EXT_VEC_TQ4_0_HK192_HV128].pipeline;
@@ -4340,10 +4340,10 @@ static void ggml_metal_encode_node(
                                 case GGML_TYPE_F32:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_F32].pipeline; break;
                                 case GGML_TYPE_F16:    pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_F16].pipeline; break;
                                 case GGML_TYPE_Q8_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_Q8_0].pipeline; break;
-                                case GGML_TYPE_TQ2_0:  pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_TQ2_0].pipeline; break;
-                                case GGML_TYPE_TQ2_1:  pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_TQ2_1].pipeline; break;
-                                case GGML_TYPE_TQ3_0:  pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_TQ3_0].pipeline; break;
-                                case GGML_TYPE_TQ4_0:  pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_TQ4_0].pipeline; break;
+                                case GGML_TYPE_KTQ2_0:  pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_TQ2_0].pipeline; break;
+                                case GGML_TYPE_KTQ2_1:  pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_TQ2_1].pipeline; break;
+                                case GGML_TYPE_KTQ3_0:  pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_TQ3_0].pipeline; break;
+                                case GGML_TYPE_KTQ4_0:  pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_TQ4_0].pipeline; break;
                                 case GGML_TYPE_Q4_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_Q4_0].pipeline; break;
                                 case GGML_TYPE_Q4_1:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_Q4_1].pipeline; break;
                                 case GGML_TYPE_Q5_0:   pipeline = ctx->kernels[GGML_METAL_KERNEL_TYPE_CPY_F32_Q5_0].pipeline; break;

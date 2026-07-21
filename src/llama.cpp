@@ -1568,9 +1568,9 @@ static bool llama_kv_cache_init(
             struct ggml_tensor * kt = cache.k_l[il];
             if (!kt || !kt->data)                continue;
             const ggml_type t = kt->type;
-            const bool is_tq = (t == GGML_TYPE_TQ2_0) ||
-                               (t == GGML_TYPE_TQ3_0) ||
-                               (t == GGML_TYPE_TQ4_0);
+            const bool is_tq = (t == GGML_TYPE_KTQ2_0) ||
+                               (t == GGML_TYPE_KTQ3_0) ||
+                               (t == GGML_TYPE_KTQ4_0);
             if (!is_tq) continue;
             ggml_tq_register_k_cache_range(il, kt->data, ggml_nbytes(kt));
         }
@@ -6001,6 +6001,14 @@ static int leankv_kvimp_sched_eval_cb(struct ggml_tensor * t, bool ask, void * u
 // output of kv_bit_allocator.py --emit-types: one "<layer> <ktype> <vtype>"
 // line per layer ('#' comments allowed), e.g. "7 tq3_0 tq4_0".
 static ggml_type leankv_type_from_name(const char * name) {
+    // Legacy alias: KV TurboQuant types were renamed tq*_0 -> ktq*_0 (freeing the
+    // TQ1_0/TQ2_0 names for mainline ternary WEIGHT quants). Old plan files use
+    // the tq*_0 spelling; map it forward before the ggml_type_name lookup.
+    char buf[72];
+    if (name && name[0] == 't' && name[1] == 'q') {
+        snprintf(buf, sizeof(buf), "k%s", name);   // tq4_0 -> ktq4_0
+        name = buf;
+    }
     for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
         const char * n = ggml_type_name((ggml_type) t);
         if (n && strcmp(n, name) == 0) return (ggml_type) t;
@@ -8510,12 +8518,12 @@ struct llama_context * llama_init_from_model(
                     // is still default-initialized.
                     if (auto_detect && il < (int)ctx->kv_self.type_k_l.size()) {
                         const ggml_type base_type = type_k;
-                        if (base_type == GGML_TYPE_TQ2_0 || base_type == GGML_TYPE_TQ2_1) {
-                            if      (layer_frac < 0.0625f) ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ2_0;
-                            else if (layer_frac < 0.375f)  ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ2_1;
-                            else                           ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ3_0;
-                        } else if (base_type == GGML_TYPE_TQ3_0) {
-                            if (layer_frac >= 0.375f)      ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ4_0;
+                        if (base_type == GGML_TYPE_KTQ2_0 || base_type == GGML_TYPE_KTQ2_1) {
+                            if      (layer_frac < 0.0625f) ctx->kv_self.type_k_l[il] = GGML_TYPE_KTQ2_0;
+                            else if (layer_frac < 0.375f)  ctx->kv_self.type_k_l[il] = GGML_TYPE_KTQ2_1;
+                            else                           ctx->kv_self.type_k_l[il] = GGML_TYPE_KTQ3_0;
+                        } else if (base_type == GGML_TYPE_KTQ3_0) {
+                            if (layer_frac >= 0.375f)      ctx->kv_self.type_k_l[il] = GGML_TYPE_KTQ4_0;
                         }
                     }
 
@@ -8620,7 +8628,7 @@ struct llama_context * llama_init_from_model(
             const bool gate_on = !(ng && ng[0] == '1');
             const int n_layer_g = (int) model->hparams.n_layer;
             auto is_aggressive = [](ggml_type t) {
-                return t == GGML_TYPE_TQ3_0 || t == GGML_TYPE_TQ2_0 || t == GGML_TYPE_TQ2_1;
+                return t == GGML_TYPE_KTQ3_0 || t == GGML_TYPE_KTQ2_0 || t == GGML_TYPE_KTQ2_1;
             };
             int n_flagged = 0;
             for (int il = 0; gate_on && il < n_layer_g; ++il) {
@@ -8636,8 +8644,8 @@ struct llama_context * llama_init_from_model(
                 if (kv_plan_loaded) continue;                // warn-only under an explicit plan
                 if ((int) ctx->kv_self.type_k_l.size() != n_layer_g) ctx->kv_self.type_k_l.assign(n_layer_g, type_k);
                 if ((int) ctx->kv_self.type_v_l.size() != n_layer_g) ctx->kv_self.type_v_l.assign(n_layer_g, type_v);
-                if (is_aggressive(ctx->kv_self.type_k_l[il])) ctx->kv_self.type_k_l[il] = GGML_TYPE_TQ4_0;
-                if (is_aggressive(ctx->kv_self.type_v_l[il])) ctx->kv_self.type_v_l[il] = GGML_TYPE_TQ4_0;
+                if (is_aggressive(ctx->kv_self.type_k_l[il])) ctx->kv_self.type_k_l[il] = GGML_TYPE_KTQ4_0;
+                if (is_aggressive(ctx->kv_self.type_v_l[il])) ctx->kv_self.type_v_l[il] = GGML_TYPE_KTQ4_0;
             }
             if (n_flagged > 0) {
                 LLAMA_LOG_WARN("%s: %d layer(s) have q_dim < head_dim (rank-bounded KV subspace); %s\n",

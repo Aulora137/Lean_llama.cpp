@@ -687,29 +687,29 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         ggml_cpy_q6_0_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
     } else if (src0->type == GGML_TYPE_Q6_0 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_q6_0_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ4_0) {
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_KTQ4_0) {
         ggml_cpy_f32_tq4_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_TQ4_0 && src1->type == GGML_TYPE_F32) {
+    } else if (src0->type == GGML_TYPE_KTQ4_0 && src1->type == GGML_TYPE_F32) {
         ggml_cpy_tq4_0_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_TQ4_0 && src1->type == GGML_TYPE_F16) {
+    } else if (src0->type == GGML_TYPE_KTQ4_0 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_tq4_0_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ3_0) {
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_KTQ3_0) {
         ggml_cpy_f32_tq3_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F32) {
+    } else if (src0->type == GGML_TYPE_KTQ3_0 && src1->type == GGML_TYPE_F32) {
         ggml_cpy_tq3_0_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F16) {
+    } else if (src0->type == GGML_TYPE_KTQ3_0 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_tq3_0_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ2_0) {
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_KTQ2_0) {
         ggml_cpy_f32_tq2_0_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_TQ2_0 && src1->type == GGML_TYPE_F32) {
+    } else if (src0->type == GGML_TYPE_KTQ2_0 && src1->type == GGML_TYPE_F32) {
         ggml_cpy_tq2_0_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_TQ2_0 && src1->type == GGML_TYPE_F16) {
+    } else if (src0->type == GGML_TYPE_KTQ2_0 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_tq2_0_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ2_1) {
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_KTQ2_1) {
         ggml_cpy_f32_tq2_1_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_TQ2_1 && src1->type == GGML_TYPE_F32) {
+    } else if (src0->type == GGML_TYPE_KTQ2_1 && src1->type == GGML_TYPE_F32) {
         ggml_cpy_tq2_1_f32_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
-    } else if (src0->type == GGML_TYPE_TQ2_1 && src1->type == GGML_TYPE_F16) {
+    } else if (src0->type == GGML_TYPE_KTQ2_1 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_tq2_1_f16_cuda(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
         ggml_cpy_flt_cuda<half, half> (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
@@ -812,29 +812,29 @@ void* ggml_cuda_cpy_fn(const ggml_tensor * src0, ggml_tensor * src1) {
         return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_q6_0, QK6_0>, QK6_0>;
     } else if (src0->type == GGML_TYPE_Q6_0 && src1->type == GGML_TYPE_F16) {
         return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_q6_0, QK6_0>, QK6_0>;
-    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ4_0) {
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_KTQ4_0) {
         return (void*) cpy_f32_q<cpy_blck_f32_tq4_0, QK_TQ4>;
-    } else if (src0->type == GGML_TYPE_TQ4_0 && src1->type == GGML_TYPE_F32) {
+    } else if (src0->type == GGML_TYPE_KTQ4_0 && src1->type == GGML_TYPE_F32) {
         return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_tq4_0, QK_TQ4>, QK_TQ4>;
-    } else if (src0->type == GGML_TYPE_TQ4_0 && src1->type == GGML_TYPE_F16) {
+    } else if (src0->type == GGML_TYPE_KTQ4_0 && src1->type == GGML_TYPE_F16) {
         return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_tq4_0, QK_TQ4>, QK_TQ4>;
-    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ3_0) {
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_KTQ3_0) {
         return (void*) cpy_f32_q<cpy_blck_f32_tq3_0, QK_TQ3>;
-    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F32) {
+    } else if (src0->type == GGML_TYPE_KTQ3_0 && src1->type == GGML_TYPE_F32) {
         return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_tq3_0, QK_TQ3>, QK_TQ3>;
-    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F16) {
+    } else if (src0->type == GGML_TYPE_KTQ3_0 && src1->type == GGML_TYPE_F16) {
         return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_tq3_0, QK_TQ3>, QK_TQ3>;
-    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ2_0) {
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_KTQ2_0) {
         return (void*) cpy_f32_q<cpy_blck_f32_tq2_0, QK_TQ2>;
-    } else if (src0->type == GGML_TYPE_TQ2_0 && src1->type == GGML_TYPE_F32) {
+    } else if (src0->type == GGML_TYPE_KTQ2_0 && src1->type == GGML_TYPE_F32) {
         return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_tq2_0, QK_TQ2>, QK_TQ2>;
-    } else if (src0->type == GGML_TYPE_TQ2_0 && src1->type == GGML_TYPE_F16) {
+    } else if (src0->type == GGML_TYPE_KTQ2_0 && src1->type == GGML_TYPE_F16) {
         return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_tq2_0, QK_TQ2>, QK_TQ2>;
-    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ2_1) {
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_KTQ2_1) {
         return (void*) cpy_f32_q<cpy_blck_f32_tq2_1, QK_TQ2_1>;
-    } else if (src0->type == GGML_TYPE_TQ2_1 && src1->type == GGML_TYPE_F32) {
+    } else if (src0->type == GGML_TYPE_KTQ2_1 && src1->type == GGML_TYPE_F32) {
         return (void*) cpy_q_f32<cpy_blck_q_f32<dequantize_tq2_1, QK_TQ2_1>, QK_TQ2_1>;
-    } else if (src0->type == GGML_TYPE_TQ2_1 && src1->type == GGML_TYPE_F16) {
+    } else if (src0->type == GGML_TYPE_KTQ2_1 && src1->type == GGML_TYPE_F16) {
         return (void*) cpy_q_f32<cpy_blck_q_f16<dequantize_tq2_1, QK_TQ2_1>, QK_TQ2_1>;
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
         return (void*) cpy_flt<cpy_1_flt<half, half>>;

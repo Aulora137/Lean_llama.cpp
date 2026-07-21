@@ -624,7 +624,7 @@ static inline __m256i load_tq4_values_signed_256() {
 struct TQ4_0_DequantizerS {
     Dequantizer4bit b4;
     const __m256i values = load_tq4_values_signed_256();
-    inline __m256i dequant(const block_tq4_0 * x) const {
+    inline __m256i dequant(const block_ktq4_0 * x) const {
         return _mm256_shuffle_epi8(values, b4.dequant(x->qs));
     }
 };
@@ -823,7 +823,7 @@ struct IQ4_NL_UnpackerS final : public Q_Unpacker<block_iq4_nl, ScaleHelperQ_0, 
     using Sum4T = Sum4TypeQ82S;
     inline static int block_size() { return QK4_NL; }
 };
-struct TQ4_0_UnpackerS final : public Q_Unpacker<block_tq4_0, ScaleHelperTQ4_0_S, TQ4_0_DequantizerS> {
+struct TQ4_0_UnpackerS final : public Q_Unpacker<block_ktq4_0, ScaleHelperTQ4_0_S, TQ4_0_DequantizerS> {
     TQ4_0_UnpackerS(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
     using Sum4T = Sum4TypeQ82S;
     inline static int block_size() { return QK_TQ4; }
@@ -852,7 +852,7 @@ struct TQ3_0_DequantizerS {
         dst[7] = (in[2] >> 5) & 7;
     }
 
-    inline __m256i dequant(const block_tq3_0 * x) const {
+    inline __m256i dequant(const block_ktq3_0 * x) const {
         // Unpack 32 x 3-bit indices from 12 packed bytes (4 groups of 3 bytes)
         uint8_t indices[32];
         unpack8(x->qs + 0, indices + 0);
@@ -865,7 +865,7 @@ struct TQ3_0_DequantizerS {
     }
 };
 
-struct TQ3_0_UnpackerS final : public Q_Unpacker<block_tq3_0, ScaleHelperTQ4_0_S, TQ3_0_DequantizerS> {
+struct TQ3_0_UnpackerS final : public Q_Unpacker<block_ktq3_0, ScaleHelperTQ4_0_S, TQ3_0_DequantizerS> {
     TQ3_0_UnpackerS(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
     using Sum4T = Sum4TypeQ82S;
     inline static int block_size() { return QK_TQ3; }
@@ -891,7 +891,7 @@ struct TQ2_0_DequantizerS {
         }
     }
 
-    inline __m256i dequant(const block_tq2_0 * x) const {
+    inline __m256i dequant(const block_ktq2_0 * x) const {
         uint8_t indices[32];
         unpack32(x->qs, indices);
         __m256i idx = _mm256_loadu_si256((const __m256i *)indices);
@@ -899,7 +899,7 @@ struct TQ2_0_DequantizerS {
     }
 };
 
-struct TQ2_0_UnpackerS final : public Q_Unpacker<block_tq2_0, ScaleHelperTQ4_0_S, TQ2_0_DequantizerS> {
+struct TQ2_0_UnpackerS final : public Q_Unpacker<block_ktq2_0, ScaleHelperTQ4_0_S, TQ2_0_DequantizerS> {
     TQ2_0_UnpackerS(const void * vx, size_t bx) : Q_Unpacker(vx, bx) {}
     using Sum4T = Sum4TypeQ82S;
     inline static int block_size() { return QK_TQ2; }
@@ -2241,13 +2241,13 @@ bool iqk_set_kernels_legacy_quants(int ne00, int typeA, int typeB, std::array<mu
             set_functions<IQ4_NL_UnpackerS>(kernels);
 #endif
             break;
-        case GGML_TYPE_TQ4_0:
+        case GGML_TYPE_KTQ4_0:
             set_functions<TQ4_0_UnpackerS>(kernels);
             break;
-        case GGML_TYPE_TQ3_0:
+        case GGML_TYPE_KTQ3_0:
             set_functions<TQ3_0_UnpackerS>(kernels);
             break;
-        case GGML_TYPE_TQ2_0:
+        case GGML_TYPE_KTQ2_0:
             set_functions<TQ2_0_UnpackerS>(kernels);
             break;
         case GGML_TYPE_MXFP4:
@@ -2587,7 +2587,7 @@ struct DequantizerIQ4NL final : public BaseLegacyDequantizer<block_iq4_nl> {
     const int8x16_t values = load_values();
 };
 
-struct DequantizerTQ4_0 final : public BaseLegacyDequantizer<block_tq4_0> {
+struct DequantizerTQ4_0 final : public BaseLegacyDequantizer<block_ktq4_0> {
 
     DequantizerTQ4_0(const void * vx, size_t bx) : BaseLegacyDequantizer(vx, bx) {}
 
@@ -2623,7 +2623,7 @@ struct DequantizerTQ4_0 final : public BaseLegacyDequantizer<block_tq4_0> {
 // TQ3_0: 3-bit Lloyd-Max codebook lookup (ARM NEON)
 // 32 values packed in 12 bytes as 4 groups of 8-in-3-bytes.
 // Can't use Q4LegacyBits (4-bit nibble unpack), need custom 3-bit unpack.
-struct DequantizerTQ3_0 final : public BaseLegacyDequantizer<block_tq3_0> {
+struct DequantizerTQ3_0 final : public BaseLegacyDequantizer<block_ktq3_0> {
 
     DequantizerTQ3_0(const void * vx, size_t bx) : BaseLegacyDequantizer(vx, bx) {}
 
@@ -2676,7 +2676,7 @@ struct DequantizerTQ3_0 final : public BaseLegacyDequantizer<block_tq3_0> {
 
 // TQ2_0: 2-bit Lloyd-Max codebook lookup (ARM NEON)
 // 32 values packed in 8 bytes as 4 values per byte (2-bit each).
-struct DequantizerTQ2_0 final : public BaseLegacyDequantizer<block_tq2_0> {
+struct DequantizerTQ2_0 final : public BaseLegacyDequantizer<block_ktq2_0> {
 
     DequantizerTQ2_0(const void * vx, size_t bx) : BaseLegacyDequantizer(vx, bx) {}
 
@@ -3423,7 +3423,7 @@ struct DeqIQ4NL {
 struct DeqTQ4_0 {
     const int8x16_t mt  = load_values();
     const uint8x16_t ml = vdupq_n_u8(0xf);
-    inline int8x16x2_t dequant(const block_tq4_0& x) const {
+    inline int8x16x2_t dequant(const block_ktq4_0& x) const {
         auto bits = vld1q_u8(x.qs);
         return { vqtbl1q_s8(mt, vandq_u8(bits, ml)), vqtbl1q_s8(mt, vshrq_n_u8(bits, 4)) };
     }
@@ -3443,7 +3443,7 @@ struct DeqTQ3_0 {
         dst[6] = (in[2] >> 2) & 7;
         dst[7] = (in[2] >> 5) & 7;
     }
-    inline int8x16x2_t dequant(const block_tq3_0& x) const {
+    inline int8x16x2_t dequant(const block_ktq3_0& x) const {
         uint8_t indices[32];
         unpack8(x.qs + 0, indices + 0);
         unpack8(x.qs + 3, indices + 8);
@@ -3465,7 +3465,7 @@ struct DeqTQ2_0 {
             dst[4*i+3] = (qs[i] >> 6) & 3;
         }
     }
-    inline int8x16x2_t dequant(const block_tq2_0& x) const {
+    inline int8x16x2_t dequant(const block_ktq2_0& x) const {
         uint8_t indices[32];
         unpack32(x.qs, indices);
         return { vqtbl1q_s8(mt, vld1q_u8(indices)), vqtbl1q_s8(mt, vld1q_u8(indices + 16)) };
@@ -3621,9 +3621,9 @@ bool iqk_convert_legacy_quants_q8_r8(int type, int n, const void * vx, size_t bx
         case GGML_TYPE_Q5_1  : iqk_convert_qX_1_q8_1_r8<block_q5_1, DeqQ51>(n, vx, bx, vy, nrc_x); break;
         case GGML_TYPE_Q6_0  : iqk_convert_qX_q80_r8<block_q6_0, DeqQ60>(n, vx, bx, vy, nrc_x); break;
         case GGML_TYPE_IQ4_NL: iqk_convert_qX_q80_r8<block_iq4_nl, DeqIQ4NL>(n, vx, bx, vy, nrc_x); break;
-        case GGML_TYPE_TQ4_0 : iqk_convert_qX_q80_r8<block_tq4_0, DeqTQ4_0>(n, vx, bx, vy, nrc_x); break;
-        case GGML_TYPE_TQ3_0 : iqk_convert_qX_q80_r8<block_tq3_0, DeqTQ3_0>(n, vx, bx, vy, nrc_x); break;
-        case GGML_TYPE_TQ2_0 : iqk_convert_qX_q80_r8<block_tq2_0, DeqTQ2_0>(n, vx, bx, vy, nrc_x); break;
+        case GGML_TYPE_KTQ4_0 : iqk_convert_qX_q80_r8<block_ktq4_0, DeqTQ4_0>(n, vx, bx, vy, nrc_x); break;
+        case GGML_TYPE_KTQ3_0 : iqk_convert_qX_q80_r8<block_ktq3_0, DeqTQ3_0>(n, vx, bx, vy, nrc_x); break;
+        case GGML_TYPE_KTQ2_0 : iqk_convert_qX_q80_r8<block_ktq2_0, DeqTQ2_0>(n, vx, bx, vy, nrc_x); break;
         case GGML_TYPE_MXFP4 : iqk_convert_qX_q80_r8<block_mxfp4, DeqMXFP4>(n, vx, bx, vy, nrc_x); break;
         case GGML_TYPE_Q8_0  : iqk_convert_qX_q80_r8<block_q8_0, DeqQ80>(n, vx, bx, vy, nrc_x); break;
         default: return false;
@@ -3663,13 +3663,13 @@ bool iqk_set_kernels_legacy_quants(int ne00, int typeA, int typeB, std::array<mu
         case GGML_TYPE_IQ4_NL:
             IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_0_q8_0, DequantizerIQ4NL, kernels);
             break;
-        case GGML_TYPE_TQ4_0:
+        case GGML_TYPE_KTQ4_0:
             IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_0_q8_0, DequantizerTQ4_0, kernels);
             break;
-        case GGML_TYPE_TQ3_0:
+        case GGML_TYPE_KTQ3_0:
             IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_0_q8_0, DequantizerTQ3_0, kernels);
             break;
-        case GGML_TYPE_TQ2_0:
+        case GGML_TYPE_KTQ2_0:
             IQK_SET_MUL_MAT_FUNCTIONS_T(mul_mat_qX_0_q8_0, DequantizerTQ2_0, kernels);
             break;
         case GGML_TYPE_MXFP4:
@@ -3817,21 +3817,21 @@ inline std::pair<mul_mat_t, int> mul_mat_kernel(int int_typeA, int nq) {
 #endif
     }
 #endif
-    else if (typeA == GGML_TYPE_TQ4_0) {
+    else if (typeA == GGML_TYPE_KTQ4_0) {
 #ifdef __aarch64__
        MAKE_FUNCS(mul_mat_qX_0_q8_0<DequantizerTQ4_0, nq);
 #else
        MAKE_FUNCS2(mul_mat_qX_0_q8_0_T<TQ4_0_UnpackerS, block_q8_2, nq);
 #endif
     }
-    else if (typeA == GGML_TYPE_TQ3_0) {
+    else if (typeA == GGML_TYPE_KTQ3_0) {
 #ifdef __aarch64__
        MAKE_FUNCS(mul_mat_qX_0_q8_0<DequantizerTQ3_0, nq);
 #else
        MAKE_FUNCS2(mul_mat_qX_0_q8_0_T<TQ3_0_UnpackerS, block_q8_2, nq);
 #endif
     }
-    else if (typeA == GGML_TYPE_TQ2_0) {
+    else if (typeA == GGML_TYPE_KTQ2_0) {
 #ifdef __aarch64__
        MAKE_FUNCS(mul_mat_qX_0_q8_0<DequantizerTQ2_0, nq);
 #else

@@ -305,7 +305,7 @@ def policy(g: Geom, target: Optional[float] = None) -> dict:
 
     # ---- universal ship floor ------------------------------------------------
     ship = {
-        "default_kv_type": "tq4_0 / tq4_0 (K/V) pure",
+        "default_kv_type": "ktq4_0 / ktq4_0 (K/V) pure",
         "per_layer_overrides": None,
         "scale": ALWAYS_SCALE,
         "norm": "robust",
@@ -355,7 +355,7 @@ def policy(g: Geom, target: Optional[float] = None) -> dict:
                          f"(q_dim {g.q_dim} > local head_dim {g.head_dim_local})")
             aggressive = {
                 "tier_3to4bpw": "TQ3 gated — the Q-dim gate does a PARTIAL promotion "
-                                "(K adaptive on the rank-bounded globals / V tq3_0 on locals): "
+                                "(K adaptive on the rank-bounded globals / V ktq3_0 on locals): "
                                 "0.118 KLD @ 26.5 MiB, a free hybrid tier that beats raw TQ3; "
                                 "OR A1R@3.5 reuse-weighted budget plan (0.129)",
                 "sub_3bpw": "unsafe on the globals — do not go below TQ3",
@@ -443,30 +443,30 @@ def _chosen_types(g: Geom, tier: str) -> tuple[str, str, list[str]]:
     """(ktype, vtype, warnings) for the tier the operator asked for."""
     warn: list[str] = []
     if tier == "tq4":
-        return "tq4_0", "tq4_0", warn
+        return "ktq4_0", "ktq4_0", warn
     if tier == "tq3":
         if g.family in ("dense-MHA", "dense-GQA", "conv-hybrid", "SSM-hybrid", "shared-KV-GQA"):
-            return "tq3_0", "tq3_0", warn
+            return "ktq3_0", "ktq3_0", warn
         if g.family == "shared-KV-MQA":
             warn.append("TQ3 on a fully rank-bounded model: the Q-dim gate auto-promotes to "
                         "TQ4 unless LEANKV_NO_QDIM_GATE=1; asym TQ4-K/TQ3-V (0.161) is the "
                         "safer middle rung.")
-            return "tq3_0", "tq3_0", warn
+            return "ktq3_0", "ktq3_0", warn
         warn.append("TQ3 not validated on this family — measure first.")
-        return "tq4_0", "tq4_0", warn
+        return "ktq4_0", "ktq4_0", warn
     # tq2
     if g.family == "SSM-hybrid":
         warn.append("TQ2 is the Qwen-hybrid exception; rank-bounded attn means the gate "
                     "promotes unless LEANKV_NO_QDIM_GATE=1. Measure before ship.")
-        return "tq2_0", "tq2_0", warn
+        return "ktq2_0", "ktq2_0", warn
     warn.append(f"TQ2 is NOT viable on {g.family} (measured dead outside the Qwen-hybrid "
                 f"exception) — refusing; emitting the TQ4 ship floor instead.")
-    return "tq4_0", "tq4_0", warn
+    return "ktq4_0", "ktq4_0", warn
 
 
 def _assemble(g, fam, ship, aggressive, flags, rationale, target=None, tier="tq4"):
     kt, vt, warn = _chosen_types(g, tier) if fam not in ("no-kv-cache", "UNKNOWN") \
-        else ("tq4_0", "tq4_0", [])
+        else ("ktq4_0", "ktq4_0", [])
     flags = flags + warn
     return {
         "model": os.path.basename(g.path),
@@ -563,27 +563,27 @@ DOC_TRUTH = {
     # (ladder rule #1), so matching ship alone is trivial; the discriminating
     # assertions are family / n_kv_owning / rank-bounded pattern / TQ2-refusal.
     # n_kv_owning: shared-KV Gemma = n_layer - shared_kv_layers; hybrids = #attn.
-    "gemma-4-E2B":   dict(ship="tq4_0/tq4_0 pure", family="shared-KV-MQA",
+    "gemma-4-E2B":   dict(ship="ktq4_0/ktq4_0 pure", family="shared-KV-MQA",
                           n_kv_owning=15, rb="all", refuses_tq2=True,
                           aggr_has="raw TQ3",
                           note="ladder: 0.0965 KLD / 88.98%"),
-    "gemma-4-E4B":   dict(ship="tq4_0/tq4_0 pure", family="shared-KV-GQA",
+    "gemma-4-E4B":   dict(ship="ktq4_0/ktq4_0 pure", family="shared-KV-GQA",
                           n_kv_owning=24, rb="globals", refuses_tq2=True,
                           aggr_has="TQ3",
                           note="ladder: 0.0477 KLD / 91.35%; globals-only rb"),
-    "LFM2.5-1.2B":   dict(ship="tq4_0/tq4_0 pure", family="conv-hybrid",
+    "LFM2.5-1.2B":   dict(ship="ktq4_0/ktq4_0 pure", family="conv-hybrid",
                           n_kv_owning=6, rb="no", refuses_tq2=True,
                           aggr_has="TQ3",
                           note="ladder: 0.0258 KLD / 91.68%; TQ2 rejected"),
-    "LFM2.5-8B-A1B": dict(ship="tq4_0/tq4_0 pure", family="conv-hybrid",
+    "LFM2.5-8B-A1B": dict(ship="ktq4_0/ktq4_0 pure", family="conv-hybrid",
                           n_kv_owning=6, rb="no", refuses_tq2=True,
                           aggr_has="TQ3",
                           note="ladder: 0.0911 KLD / 85.85%; TQ2 rejected"),
-    "gemma-3-4b":    dict(ship="tq4_0/tq4_0 pure", family="dense-GQA",
+    "gemma-3-4b":    dict(ship="ktq4_0/ktq4_0 pure", family="dense-GQA",
                           n_kv_owning=None, rb="no", refuses_tq2=True,
                           aggr_has="TQ3",
                           note="ladder rule #1; legacy A1@3.0 superseded"),
-    "Qwen3.5":       dict(ship="tq4_0/tq4_0 pure", family="SSM-hybrid",
+    "Qwen3.5":       dict(ship="ktq4_0/ktq4_0 pure", family="SSM-hybrid",
                           n_kv_owning=None, rb=None, refuses_tq2=False,
                           aggr_has="TQ2",
                           note="SSM-hybrid; TQ2 = the Qwen-hybrid exception"),
@@ -599,7 +599,7 @@ def _doc_for(fname: str):
 
 def _emitted_ship_str(d: dict) -> str:
     t = d["ship_config"]["default_kv_type"]
-    return "tq4_0/tq4_0 pure" if t.startswith("tq4_0 / tq4_0") else t
+    return "ktq4_0/ktq4_0 pure" if t.startswith("ktq4_0 / ktq4_0") else t
 
 
 def _rb_pattern(g: Geom) -> str:
@@ -634,8 +634,8 @@ def validate(models_dir: str) -> int:
                            f"{g.n_kv_owning}"))
         if T.get("rb") is not None:
             checks.append(("rank_bnd", _rb_pattern(g) == T["rb"], _rb_pattern(g)))
-        # TQ2 refusal: refusing families floor to tq4_0 at target 2; Qwen keeps tq2_0
-        tq2_refused = d2["chosen_tier"]["k"] == "tq4_0"
+        # TQ2 refusal: refusing families floor to ktq4_0 at target 2; Qwen keeps ktq2_0
+        tq2_refused = d2["chosen_tier"]["k"] == "ktq4_0"
         checks.append(("tq2_refuse", tq2_refused == T["refuses_tq2"],
                        "refused" if tq2_refused else "allowed"))
         # aggressive menu carries the expected tier keyword

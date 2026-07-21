@@ -541,9 +541,9 @@ uint64_t leankv_fingerprint_model(const struct llama_model * model) {
 
 static int leankv_tq_bits(enum ggml_type t) {
     switch (t) {
-        case GGML_TYPE_TQ2_0: return 2;
-        case GGML_TYPE_TQ3_0: return 3;
-        case GGML_TYPE_TQ4_0: return 4;
+        case GGML_TYPE_KTQ2_0: return 2;
+        case GGML_TYPE_KTQ3_0: return 3;
+        case GGML_TYPE_KTQ4_0: return 4;
         default: return 0;
     }
 }
