@@ -16,6 +16,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ── SIMD helpers ──────────────────────────────────────────────────── */
@@ -205,6 +206,100 @@ static inline uint8_t find_nearest_tq4(float xn) {
     return idx;
 }
 
+/* ── LeanKV: block scale statistic (LEANKV_TQ_SCALE) ───────────────────
+ *
+ * The shipping scale is `d = max|block|`, an extreme-order statistic that a
+ * single outlier inside a 32-element block can hijack — wasting the 4/8/16
+ * level codebook on empty range.  This selector lets a robust statistic be
+ * chosen instead.  It is READ-path neutral: `d` is still stored fp16 in the
+ * block exactly as today, so there is NO format change and dequantization is
+ * untouched.  Default (env unset) is `amax` = current behaviour, and the
+ * dispatch is a single predicted branch on a cached int.
+ *
+ *   LEANKV_TQ_SCALE = amax | absmean | rms | mse_opt
+ *
+ * See docs/leankv-scale-scheme-study-2026-07.md for the constants below.
+ * ──────────────────────────────────────────────────────────────────── */
+
+enum { GGML_TQ_SCALE_AMAX = 0, GGML_TQ_SCALE_ABSMEAN, GGML_TQ_SCALE_RMS, GGML_TQ_SCALE_MSEOPT };
+
+/* c constants for d = c * mean|x| and d = c * sqrt(mean x^2), indexed by bits
+ * (2,3,4).  Selected by minimizing calib-half reconstruction SSE, cross-model. */
+static const float TQ_ABSMEAN_C[5] = { 0.0f, 0.0f, 1.8f, 2.6f, 3.4f };
+static const float TQ_RMS_C    [5] = { 0.0f, 0.0f, 1.4f, 2.0f, 2.6f };
+
+static int ggml_tq_scale_mode(void) {
+    static int mode = -1;
+    if (mode < 0) {
+        const char * s = getenv("LEANKV_TQ_SCALE");
+        int m = GGML_TQ_SCALE_AMAX;
+        if (s) {
+            if      (strcmp(s, "absmean") == 0) m = GGML_TQ_SCALE_ABSMEAN;
+            else if (strcmp(s, "rms")     == 0) m = GGML_TQ_SCALE_RMS;
+            else if (strcmp(s, "mse_opt") == 0) m = GGML_TQ_SCALE_MSEOPT;
+        }
+        mode = m;  /* benign race: idempotent */
+    }
+    return mode;
+}
+
+/* Nearest level for the given bit-width (shared by the mse_opt search). */
+static inline uint8_t tq_find_nearest(float xn, int bits) {
+    if (bits == 2) return find_nearest_tq2(xn);
+    if (bits == 3) return find_nearest_tq3(xn);
+    return find_nearest_tq4(xn);
+}
+
+static inline const float * tq_levels(int bits) {
+    if (bits == 2) return TQ2_LEVELS;
+    if (bits == 3) return TQ3_LEVELS;
+    return TQ4_LEVELS;
+}
+
+/* Per-block grid search for the MSE-optimal scale: d = t * amax, 32 candidate
+ * t in [0.24, 1.01].  This is the per-block optimum for a fixed level set —
+ * the upper bound any fixed scale statistic can approach. */
+static float tq_scale_mse_opt(const float * block, int n, int bits, float amax) {
+    const float * L = tq_levels(bits);
+    float best_d = amax, best_sse = INFINITY;
+    for (int g = 0; g < 32; g++) {
+        const float t  = 0.24f + 0.0248387097f * (float)g;   /* -> 1.01 */
+        const float d  = amax * t;
+        const float id = 1.0f / d;
+        float sse = 0.0f;
+        for (int j = 0; j < n; j++) {
+            float xn = block[j] * id;
+            if (xn < -1.0f) xn = -1.0f;
+            if (xn >  1.0f) xn =  1.0f;
+            const float e = block[j] - L[tq_find_nearest(xn, bits)] * d;
+            sse += e * e;
+        }
+        if (sse < best_sse) { best_sse = sse; best_d = d; }
+    }
+    return best_d;
+}
+
+/* The one place the block scale is decided.  amax is passed in because every
+ * caller already computed it (and mse_opt searches relative to it). */
+static inline float tq_block_scale(const float * block, int n, int bits, float amax) {
+    switch (ggml_tq_scale_mode()) {
+        case GGML_TQ_SCALE_ABSMEAN: {
+            float s = 0.0f;
+            for (int j = 0; j < n; j++) s += fabsf(block[j]);
+            return TQ_ABSMEAN_C[bits] * s / (float)n;
+        }
+        case GGML_TQ_SCALE_RMS: {
+            float s = 0.0f;
+            for (int j = 0; j < n; j++) s += block[j] * block[j];
+            return TQ_RMS_C[bits] * sqrtf(s / (float)n);
+        }
+        case GGML_TQ_SCALE_MSEOPT:
+            return tq_scale_mse_opt(block, n, bits, amax);
+        default:
+            return amax;
+    }
+}
+
 /* ── TQ2_0 ─────────────────────────────────────────────────────────── */
 
 void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RESTRICT y, int64_t k) {
@@ -221,7 +316,7 @@ void quantize_row_tq2_0_ref(const float * GGML_RESTRICT x, block_tq2_0 * GGML_RE
             if (v > amax) amax = v;
         }
 
-        const float d = amax;
+        const float d = (amax < 1e-10f) ? amax : tq_block_scale(block, QK_TQ2, 2, amax);
         y[i].d = GGML_FP32_TO_FP16(d);
 
         if (amax < 1e-10f) {
@@ -306,8 +401,12 @@ void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RE
             continue;
         }
 
-        /* Initial nearest-level assignment using max|x| scale */
-        const float id = 1.0f / amax;
+        /* Initial nearest-level assignment.  Shipping behaviour uses the max|x|
+         * scale here; LEANKV_TQ_SCALE swaps in a different initial statistic
+         * and the least-squares + coordinate-descent refinement below then runs
+         * unchanged on top of that (better init -> better local optimum). */
+        const float d0 = tq_block_scale(block, QK_TQ3, 3, amax);
+        const float id = 1.0f / ((d0 > 0.0f) ? d0 : amax);
         uint8_t indices[QK_TQ3];
         for (int j = 0; j < QK_TQ3; j++) {
             float xn = block[j] * id;
@@ -405,7 +504,7 @@ void quantize_row_tq4_0_ref(const float * GGML_RESTRICT x, block_tq4_0 * GGML_RE
             if (v > amax) amax = v;
         }
 
-        const float d  = amax;
+        const float d  = (amax <= 0.0f) ? amax : tq_block_scale(block, QK_TQ4, 4, amax);
         const float id = (d > 0.0f) ? 1.0f / d : 0.0f;
         y[i].d = ggml_fp32_to_fp16(d);
 
