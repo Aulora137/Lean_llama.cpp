@@ -17,7 +17,7 @@ Gemma 4 E2B campaign) so the design doesn't have to be re-derived.
 |---|---|---|
 | Dense (Mistral 7B) | coherent channel outliers | Hadamard rotation + scalar TQ (TQ4 +0.28% PPL) |
 | Qwen 3.5 hybrid (8/36 layers have KV) | the *architecture* — Mamba layers bypass KV | plain TQ already near-optimal; even TQ2 only +2.6%. Nothing to adapt — avoidance is built in |
-| Gemma 3-4B (MQA, single-owner) | variance outliers + one sink layer | A1 uniform+outlier + robust norm (importance signal proved **redundant**, corr 0.82 with variance; A3 lost 18% at 30σ) |
+| Gemma 3-4B (GQA 8Q/4KV, single-owner) | variance outliers + one sink layer | A1 uniform+outlier + robust norm (importance signal proved **redundant**, corr 0.82 with variance; A3 lost 18% at 30σ) |
 | Gemma 4 E2B (MQA, 15-own/20-share, rank-bounded) | **cross-layer reuse** (owner 13 feeds 17 layers) + **rank slack** (global r95 fill 38.3% of 512) | **A1R reuse-weighted allocation: −42% KLD vs A1 at 99σ**; low-rank ladder armed on globals |
 | LFM2.5 (conv hybrid, 6 attn layers on both 1.2B and 8B-A1B MoE) | the architecture — conv layers hold fixed 16 KB state, zero KV growth; no rank slack (r99 89–94%) | plain A1+robust on the 6 attn tensors; sink at LAST attn layer on both sizes (14 / 21); entropy converges to A1, importance loses on both (campaigns 2–3). 8B-A1B total footprint ≈ 5.5 GB → the 8 GB SLM thesis holds; KV is not the binding constraint |
 

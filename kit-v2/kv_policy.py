@@ -393,17 +393,23 @@ def policy(g: Geom, target: Optional[float] = None) -> dict:
         flags.append(f"SSM-hybrid: {g.n_kv_owning}/{g.n_layer} attention layers grow KV; "
                      f"the rest are mamba/deltanet (fixed recurrent state) — kv_bypass "
                      f"{g.kv_bypass_fraction:.0%}. Extreme dilution: avoidance is built in.")
+        if g.rank_bounded_any:
+            tq2_caveat = (f"CAVEAT: these attn layers ARE rank-bounded "
+                          f"(q_dim {g.q_dim} < head_dim {g.head_dim_local}), so the Q-dim gate "
+                          f"WOULD promote TQ2->TQ4 unless LEANKV_NO_QDIM_GATE=1; the doc's "
+                          f"TQ2-survival was measured ungated. Treat as measure-before-ship.")
+            flags.append(f"NOTE: attn layers rank-bounded (q_dim {g.q_dim} < {g.head_dim_local}) "
+                         f"— TQ2 exception is dilution-driven, not rank-driven; verify per checkpoint")
+        else:
+            tq2_caveat = (f"This checkpoint is NOT rank-bounded (q_dim {g.q_dim} == head_dim "
+                          f"{g.head_dim_local}), so the Q-dim gate leaves TQ2 as-requested — the "
+                          f"dilution exception applies directly. Still measure-before-ship per "
+                          f"checkpoint.")
         aggressive = {
             "tier_3to4bpw": "TQ3/TQ3 (plain TQ already near-optimal on this family)",
             "sub_3bpw": "TQ2 is the ONE documented exception where 2-bit survives (Qwen-3.5 "
-                        f"hybrid, +2.6% only — {D['compiler']}). CAVEAT: these attn layers are "
-                        f"rank-bounded (q_dim {g.q_dim} < head_dim {g.head_dim_local}), so the "
-                        f"Q-dim gate WOULD promote TQ2->TQ4 unless LEANKV_NO_QDIM_GATE=1; the "
-                        f"doc's TQ2-survival was measured ungated. Treat as measure-before-ship.",
+                        f"hybrid, +2.6% only — {D['compiler']}). {tq2_caveat}",
         }
-        if g.rank_bounded_any:
-            flags.append(f"NOTE: attn layers rank-bounded (q_dim {g.q_dim} < {g.head_dim_local}) "
-                         f"— TQ2 exception is dilution-driven, not rank-driven; verify per checkpoint")
         rationale.append(f"[{D['compiler']}][{D['ladder']}] Qwen-3.5 SSM-hybrid: mamba layers "
                          f"bypass KV, only a few attn layers hold cache; TQ4 pure ships, TQ2 is "
                          f"the sole cross-program 2-bit survivor (extreme dilution). "
