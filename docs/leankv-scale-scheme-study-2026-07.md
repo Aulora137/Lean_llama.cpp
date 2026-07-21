@@ -54,10 +54,13 @@ Two clean facts:
   full range is worth more once you have enough levels; at 2-bit a single outlier hijacks
   amax and `mse_opt`'s robustness wins). Hence the gate.
 
-## Recommendation
+## Recommendation — SHIPPED (2026-07-21)
 
-**Ship `mse_opt` as the default 2-bit block scale; keep `amax` at ≥3-bit.** Wire the
-gate by bit-width in the quantizer (or expose per-tier defaults). Free ~half-a-gap of
+**`mse_opt` is now the default 2-bit block scale; `amax` at ≥3-bit.** Implemented as
+`LEANKV_TQ_SCALE=auto` (the default when the env is unset): `tq_block_scale()` gates by
+bit-width — mse_opt at 2-bit, amax at ≥3-bit. `LEANKV_TQ_SCALE=amax` forces the legacy
+behavior everywhere. Verified live: LFM2.5-1.2B TQ2 PPL 28.65 (amax) → 22.59 (default);
+TQ3 unchanged (19.02 both). No format change; dequant untouched. Free ~half-a-gap of
 2-bit quality on every non-rank-bounded model — the only unambiguous, no-cost, no-format-
 change win found in the entire KV-quant program. Fold into the adaptive menu as: *scale =
 mse_opt @ 2-bit / amax @ ≥3-bit*, independent of architecture.

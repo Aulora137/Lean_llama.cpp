@@ -183,3 +183,30 @@ Provenance: `leankv-tq-production-ladder-2026-07.md`,
 `leankv-kv-importance-ablation-2026-07.md`,
 `leankv-entropy-lfm2-campaign-2026-07.md`. Prober: `kit-v2/kv_policy.py`
 (reuses `kit-v2/gguf_extract.py`; recommends `kit-v2/kv_bit_allocator.py --arm A1R`).
+
+## Wiring — SHIPPED (2026-07-21)
+
+The prober is now connected to both the engine and the model launch:
+
+1. **Scale auto-default (engine).** `LEANKV_TQ_SCALE=auto` is the default when unset:
+   `ggml/src/ggml-tq.c` gates the block scale by bit-width — **mse_opt at 2-bit, amax at
+   ≥3-bit** — so the ~54% 2-bit gap-closure win applies automatically wherever TQ2 is
+   used, with no flag. `LEANKV_TQ_SCALE=amax` restores legacy. (Verified: LFM2.5-1.2B TQ2
+   PPL 28.65→22.59; TQ3 unchanged.)
+
+2. **Launch auto-config (`scripts/leankv-serve.sh`).** A thin wrapper that probes the
+   model with `kv_policy.py`, logs the family + rationale + any refusals, and execs
+   `llama-server` with the derived `-ctk/-ctv`:
+   ```
+   scripts/leankv-serve.sh <model.gguf> [--target-bpw N] [-- <extra llama-server args>]
+   ```
+   `--target-bpw 4` (default) → the TQ4/TQ4 ship floor; `--target-bpw 2|3` → the
+   family-appropriate aggressive tier with the prober's refusals honored (e.g. TQ2 on a
+   conv-hybrid is refused and floored to TQ4, loudly). `LEANKV_SERVE_DRYRUN=1` prints the
+   resolved command without launching. The node's model-server units can point at this
+   wrapper to self-configure KV per model instead of hardcoding `-ctk/-ctv`.
+
+**Still a follow-on (not shipped):** in-engine classification at load (the wrapper reuses
+the validated Python prober rather than duplicating its logic in C); and auto-emitting a
+reuse-weighted per-layer plan (needs the runtime kvimp pass). The uniform-tier path (the
+ship floor + aggressive tiers) is fully covered by the wrapper today.

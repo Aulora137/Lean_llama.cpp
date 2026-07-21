@@ -216,12 +216,17 @@ static inline uint8_t find_nearest_tq4(float xn) {
  * untouched.  Default (env unset) is `amax` = current behaviour, and the
  * dispatch is a single predicted branch on a cached int.
  *
- *   LEANKV_TQ_SCALE = amax | absmean | rms | mse_opt
+ *   LEANKV_TQ_SCALE = auto | amax | absmean | rms | mse_opt
  *
- * See docs/leankv-scale-scheme-study-2026-07.md for the constants below.
+ * DEFAULT (env unset) is `auto` = bit-width-gated: mse_opt at 2-bit (closes
+ * ~54-55% of the TQ2->TQ3 gap closed-loop, free, no format change) and amax at
+ * >=3-bit (where mse_opt is neutral-to-slightly-worse — amax's full range wins
+ * once the codebook has enough levels).  Set LEANKV_TQ_SCALE=amax to force the
+ * legacy behaviour everywhere.  See docs/leankv-scale-scheme-study-2026-07.md.
  * ──────────────────────────────────────────────────────────────────── */
 
-enum { GGML_TQ_SCALE_AMAX = 0, GGML_TQ_SCALE_ABSMEAN, GGML_TQ_SCALE_RMS, GGML_TQ_SCALE_MSEOPT };
+enum { GGML_TQ_SCALE_AUTO = 0, GGML_TQ_SCALE_AMAX, GGML_TQ_SCALE_ABSMEAN,
+       GGML_TQ_SCALE_RMS, GGML_TQ_SCALE_MSEOPT };
 
 /* c constants for d = c * mean|x| and d = c * sqrt(mean x^2), indexed by bits
  * (2,3,4).  Selected by minimizing calib-half reconstruction SSE, cross-model. */
@@ -232,11 +237,13 @@ static int ggml_tq_scale_mode(void) {
     static int mode = -1;
     if (mode < 0) {
         const char * s = getenv("LEANKV_TQ_SCALE");
-        int m = GGML_TQ_SCALE_AMAX;
+        int m = GGML_TQ_SCALE_AUTO;  /* default: bit-width-gated (mse_opt@2b / amax@>=3b) */
         if (s) {
-            if      (strcmp(s, "absmean") == 0) m = GGML_TQ_SCALE_ABSMEAN;
+            if      (strcmp(s, "amax")    == 0) m = GGML_TQ_SCALE_AMAX;
+            else if (strcmp(s, "absmean") == 0) m = GGML_TQ_SCALE_ABSMEAN;
             else if (strcmp(s, "rms")     == 0) m = GGML_TQ_SCALE_RMS;
             else if (strcmp(s, "mse_opt") == 0) m = GGML_TQ_SCALE_MSEOPT;
+            /* "auto" or anything unrecognized -> AUTO */
         }
         mode = m;  /* benign race: idempotent */
     }
@@ -282,7 +289,12 @@ static float tq_scale_mse_opt(const float * block, int n, int bits, float amax) 
 /* The one place the block scale is decided.  amax is passed in because every
  * caller already computed it (and mse_opt searches relative to it). */
 static inline float tq_block_scale(const float * block, int n, int bits, float amax) {
-    switch (ggml_tq_scale_mode()) {
+    int mode = ggml_tq_scale_mode();
+    /* AUTO (default): mse_opt at 2-bit where it wins big, amax at >=3-bit. */
+    if (mode == GGML_TQ_SCALE_AUTO) {
+        return bits == 2 ? tq_scale_mse_opt(block, n, bits, amax) : amax;
+    }
+    switch (mode) {
         case GGML_TQ_SCALE_ABSMEAN: {
             float s = 0.0f;
             for (int j = 0; j < n; j++) s += fabsf(block[j]);
